@@ -29,6 +29,8 @@ let rec random_identifier size =
   else
     s
 
+module Make(M : JsooMonad.S) = struct 
+
 let raw_call name uri error_cb user_cb =
   let script = Dom_html.(createScript document) in
   let finalize () =
@@ -44,13 +46,13 @@ let raw_call name uri error_cb user_cb =
   script##async <- Js._true;
   (Js.Unsafe.coerce script)##onerror <- (fun x -> finalize (); error_cb x);
   (Js.Unsafe.coerce script)##onload <- (fun x ->
-      Lwt.async (fun () ->
-          Lwt.bind (Lwt_js.sleep 1.) (fun () ->
+      M.don't_wait (fun () ->
+          M.bind (M.sleep 1.) (fun () ->
               if !executed
-              then Lwt.return_unit
+              then M.return ()
               else (
                 Firebug.console##warn(Js.string "Jsonp: script loaded but callback not executed");
-                finalize (); error_cb x; Lwt.return_unit))
+                finalize (); error_cb x; M.return ()))
         )
     );
   let init () = ignore (Dom.appendChild (Dom_html.document##body) script) in
@@ -62,14 +64,14 @@ let call_ make_uri error_cb user_cb =
   raw_call name uri error_cb user_cb
 
 let call_custom_url ?timeout make_uri =
-  let t,w = Lwt.task () in
-  let init, finalize = call_ make_uri (fun _ -> Lwt.cancel t) (Lwt.wakeup w) in
-  Lwt.on_cancel t finalize;
+  let t,w = M.task () in
+  let init, finalize = call_ make_uri (fun _ -> M.cancel w) (fun x -> M.fill w x) in
+  M.on_cancel t finalize;
   let new_t = match timeout with
     | None -> t
     | Some delay ->
-      let wait = Lwt.bind  (Lwt_js.sleep delay) (fun () -> Lwt.cancel t; t) in
-      Lwt.choose [wait; t]
+      let wait = M.bind  (M.sleep delay) (fun () -> M.cancel w; t) in
+      M.choose [wait; t]
   in
   init ();
   new_t
@@ -94,3 +96,4 @@ let call ?timeout ?(param="callback") url =
       in Url.string_of_url new_url
   in
   call_custom_url ?timeout make_uri
+end

@@ -281,9 +281,9 @@ let build_table ?style ?tr_style ?td_style f t =
   m
 
 let http_get url =
-  XmlHttpRequest.get url >>= fun r ->
-  let cod = r.XmlHttpRequest.code in
-  let msg = r.XmlHttpRequest.content in
+  Lwt_xmlHttpRequest.get url >>= fun r ->
+  let cod = r.Lwt_xmlHttpRequest.code in
+  let msg = r.Lwt_xmlHttpRequest.content in
   if cod = 0 || cod = 200
   then Lwt.return msg
   else fst (Lwt.wait ())

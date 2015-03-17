@@ -1,12 +1,17 @@
 description = "Js_of_ocaml library"
 version = "dev"
-archive(byte) = "js_of_ocaml.cma"
-requires = "js_of_ocaml.syntax,lwt"
+requires = "js_of_ocaml.base,js_of_ocaml.syntax"
 
 linkopts(javascript,-jsoo_noruntime) = "+js_of_ocaml/runtime.js"
 linkopts(javascript,jsoo_classlist) += "+js_of_ocaml/classlist.js"
 linkopts(javascript,pkg_graphics) += "+js_of_ocaml/graphics.js"
 linkopts(javascript,pkg_num) += "+js_of_ocaml/nat.js"
+
+package "base" (
+  description = "Js_of_ocaml library"
+  version = "[distributed with js_of_ocaml]"
+  archive(byte) = "js_of_ocaml.cma"
+)
 
 package "syntax" (
   description = "Js_of_ocaml syntax extension"
@@ -34,12 +39,20 @@ package "deriving" (
   )
 )
 
+package "lwt" (
+  exists_if = "lwt.cma"
+  description = "Lwt for js_of_ocaml."
+  version = "[distributed with js_of_ocaml]"
+  archive(byte) = "lwt.cma"
+  requires = "lwt,js_of_ocaml,js_of_ocaml.weak"
+)
+
 package "graphics" (
   exists_if = "graphics.cma"
   description = "Graphics for js_of_ocaml."
   version = "[distributed with js_of_ocaml]"
   archive(byte) = "graphics.cma"
-  requires = "lwt,graphics,js_of_ocaml"
+  requires = "js_of_ocaml.lwt,graphics,js_of_ocaml"
 )
 
 package "tyxml" (
@@ -55,7 +68,7 @@ package "log" (
   description = "Lwt logger for js_of_ocaml."
   version = "[distributed with js_of_ocaml]"
   archive(byte) = "logger.cma"
-  requires = "lwt,lwt.log,js_of_ocaml,js_of_ocaml.weak"
+  requires = "lwt.log,js_of_ocaml.lwt,js_of_ocaml,js_of_ocaml.weak"
 )
 
 package "weak" (

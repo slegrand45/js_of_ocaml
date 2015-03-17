@@ -38,6 +38,7 @@ compiler/js_lexer.ml
 compiler/js_parser.ml
 compiler/js_parser.mli
 compiler/compiler_version.ml
+compiler/myfindlib.ml
 compiler/man
 jsoo_tools/jsoo_mktop
 jsoo_tools/jsoo_mkcmis
@@ -55,6 +56,7 @@ benchmarks/build
 benchmarks/results
 benchmarks/config
 lib/deriving_json/deriving_Json_lexer.ml
+lib/META
 Makefile.local
 
 # OCamlbuild dir

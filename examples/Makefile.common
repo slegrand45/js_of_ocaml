@@ -4,19 +4,20 @@ include ../../Makefile.conf
 
 COMP=../../compiler/$(COMPILER)
 JSFILES=../../runtime/runtime.js
-OCAMLC=ocamlfind ocamlc -package lwt -pp "camlp4o ../../lib/syntax/pa_js.cmo" -I ../../lib -g
+OCAMLC=ocamlfind ocamlc -package lwt -pp "camlp4o ../../lib/syntax/pa_js.cmo" -I ../../lib/lwt -I ../../lib -g
 STDLIB=$(LIBNAME).cma
+LWT=lwt.cma
 
 $(NAME).js: $(NAME).byte $(COMP) $(JSFILES)
 	$(COMP) --noruntime $(JSFILES) $(OPTIONS) $(NAME).byte
 
 $(NAME).byte: $(OBJS)
-	$(OCAMLC) -linkpkg -o $@ $(STDLIB) $^
+	$(OCAMLC) -linkpkg -o $@ $(STDLIB) $(LWT) $^
 
-%.cmo: %.ml ../../lib/$(STDLIB)
+%.cmo: %.ml ../../lib/$(STDLIB) ../../lib/lwt/$(LWT) 
 	$(OCAMLC) -c $<
 
-%.cmi: %.mli ../../lib/$(STDLIB)
+%.cmi: %.mli ../../lib/$(STDLIB) ../../lib/lwt/$(LWT) 
 	$(OCAMLC) -c $<
 
 clean::

@@ -14,6 +14,9 @@ IMPL := lib/$(LIBNAME).cma   \
 INTF += lib/log/*.cmi
 IMPL += lib/log/logger.cma
 
+INTF += lib/lwt/*.cmi
+IMPL += lib/lwt/lwt.cma
+
 ifeq "${BEST}" "opt"
 ifeq "${NATDYNLINK}" "YES"
 IMPL += lib/syntax/pa_js.cmx lib/syntax/pa_js.cmxs
@@ -42,6 +45,7 @@ OTHERS := runtime/runtime.js runtime/weak.js \
           runtime/toplevel.js \
           runtime/graphics.js \
           runtime/nat.js \
+	  runtime/core_kernel.js
 
 COMP_INTF := compiler/compiler.cmi
 COMP_IMPL := compiler/compiler.cma

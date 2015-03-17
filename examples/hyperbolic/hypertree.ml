@@ -234,9 +234,9 @@ module Html = Dom_html
 let json : < parse : Js.js_string Js.t -> 'a> Js.t = Js.Unsafe.variable "JSON"
 
 let http_get url =
-  XmlHttpRequest.get url >>= fun r ->
-  let cod = r.XmlHttpRequest.code in
-  let msg = r.XmlHttpRequest.content in
+  Lwt_xmlHttpRequest.get url >>= fun r ->
+  let cod = r.Lwt_xmlHttpRequest.code in
+  let msg = r.Lwt_xmlHttpRequest.content in
   if cod = 0 || cod = 200
   then Lwt.return msg
   else fst (Lwt.wait ())
@@ -641,7 +641,7 @@ Firebug.console##time(Js.string "draw");
           done;
           !s
         in
-        if not (Lazy.lazy_is_val img) then begin
+        if not (Lazy.is_val img) then begin
           let s = min_scale l 1. 1. 1. in
           if s *. max rx ry > 1. then ignore (Lazy.force img)
         end else begin

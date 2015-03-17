@@ -105,8 +105,8 @@ let json : < parse : Js.js_string Js.t -> 'a> Js.t = Js.Unsafe.variable "JSON"
 let (>>=) = Lwt.bind
 
 let http_get url =
-  XmlHttpRequest.get url
-    >>= fun {XmlHttpRequest.code = cod; content = msg} ->
+  Lwt_xmlHttpRequest.get url
+    >>= fun {Lwt_xmlHttpRequest.code = cod; content = msg} ->
   if cod = 0 || cod = 200
   then Lwt.return msg
   else fst (Lwt.wait ())
