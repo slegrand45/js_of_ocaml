@@ -27,7 +27,8 @@ JSFILES= +weak.js +toplevel.js +nat.js
 PACKAGES= \
 	lwt bigarray tyxml.functor \
 	react reactiveData \
-	js_of_ocaml \
+	js_of_ocaml.base \
+	js_of_ocaml.lwt \
 	js_of_ocaml.deriving \
 	js_of_ocaml.tyxml \
 	js_of_ocaml.toplevel

@@ -22,6 +22,8 @@ open Lwt
 open Compiler
 module Html = Dom_html
 
+module Jsonp = Jsonp.Make(Lwt_monad)
+
 module H = struct
   type 'a t = {
     data : 'a array;

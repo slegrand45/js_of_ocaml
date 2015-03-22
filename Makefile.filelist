@@ -11,11 +11,13 @@ IMPL := lib/$(LIBNAME).cma   \
         lib/dll$(LIBNAME)$(DLLEXT) \
         lib/lib$(LIBNAME)$(LIBEXT)
 
+ifeq "${WITH_LWT}" "YES"
 INTF += lib/log/*.cmi
 IMPL += lib/log/logger.cma
 
 INTF += lib/lwt/*.cmi
 IMPL += lib/lwt/lwt.cma
+endif
 
 ifeq "${BEST}" "opt"
 ifeq "${NATDYNLINK}" "YES"
@@ -23,7 +25,7 @@ IMPL += lib/syntax/pa_js.cmx lib/syntax/pa_js.cmxs
 endif
 endif
 
-ifeq "${WITH_GRAPHICS}" "YES"
+ifeq "${WITH_GRAPHICS}${WITH_LWT}" "YESYES"
 IMPL += lib/graphics/graphics.cma
 INTF += lib/graphics/*.cmi
 endif
