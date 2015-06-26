@@ -50,6 +50,13 @@ type t = {
   count : int IdentMap.t;
 }
 
+module Scope : sig
+  type t
+  val toplevel : unit -> t
+  val new_child : t -> t
+  val greater_common_scope : t list -> t
+  val compare : t -> t -> int
+end
 
 class type freevar =
   object('a)
@@ -57,6 +64,7 @@ class type freevar =
     method merge_info : 'a -> unit
     method block : ?catch:bool -> ident list -> unit
 
+    method get_scope : Scope.t
     method def_var : ident -> unit
     method use_var : ident -> unit
     method state : t
@@ -72,7 +80,7 @@ class free : freevar
 
 class rename_variable : Util.StringSet.t -> freevar
 
-class share_constant : mapper
+class share_constant : freevar
 
 class compact_vardecl : object('a)
   inherit free

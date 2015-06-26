@@ -170,96 +170,7 @@ class subst sub = object
     method ident x = sub x
 end
 
-class replace_expr f = object(m)
-  inherit map as super
-  method expression e = try EVar (f e) with Not_found -> super#expression e
-
-  (* do not replace constant in switch case *)
-  method switch_case e =
-    match e with
-    | ENum _ | EStr _ -> e
-    | _ -> m#expression e
-end
-
 open Util
-
-(* this optimisation should be done at the lowest common scope *)
-class share_constant = object(m)
-  inherit map as super
-
-  val count = Hashtbl.create 17
-
-  method expression e =
-    let e = match e with
-      | EStr (s,`Utf8) when not(Util.has_backslash s) && Util.is_ascii s ->
-        let e = EStr (s,`Bytes) in
-        let n = try Hashtbl.find count e with Not_found -> 0 in
-        Hashtbl.replace count e (n+1);
-        e
-      | EStr (_,_)
-      | ENum _ ->
-        let n = try Hashtbl.find count e with Not_found -> 0 in
-        Hashtbl.replace count e (n+1);
-        e
-      | _ -> e in
-    super#expression e
-
-  (* do not replace constant in switch case *)
-  method switch_case e =
-    match e with
-    | ENum _ | EStr _ -> e
-    | _ -> m#expression e
-
-  method sources l =
-    let (revl, _) =
-      List.fold_left
-        (fun (l,prolog) (x, loc) ->
-           match x with
-           | Statement (Expression_statement (EStr _)) when prolog ->
-               (x, loc) :: l, prolog
-           | x ->
-               (m#source x, loc)::l, false)
-        ([],true) l
-    in
-    List.rev revl
-
-  method program p =
-    let p = super#program p in
-
-    let all = Hashtbl.create 17 in
-    Hashtbl.iter (fun x n ->
-        let shareit = match x with
-          (* JavaScript engines recognize the pattern
-             'typeof x==="number"'; if the string is shared,
-             less efficient code is generated. *)
-          | EStr ("number", _) -> None
-          | EStr(s,_) when n > 1 ->
-            if String.length s < 20
-            then Some ("str_"^s)
-            else Some ("str_"^(String.sub s 0 16)^"_abr")
-          | ENum f when n > 1 ->
-            let s = Javascript.string_of_number f in
-            let l = String.length s in
-            if l > 2
-            then Some ("num_"^s)
-            else None
-          | _ -> None in
-        match shareit with
-        | Some name ->
-          let v = Code.Var.fresh () in
-          Code.Var.name v name;
-          Hashtbl.add all x (V v)
-        | _ -> ()
-      ) count ;
-    if Hashtbl.length all = 0
-    then p
-    else
-      let f = Hashtbl.find all in
-      let p = (new replace_expr f)#program p in
-      let all = Hashtbl.fold (fun e v acc ->
-          (v, Some (e,N)) :: acc) all [] in
-      (Statement (Variable_statement all), N) :: p
-end
 
 module S = Code.VarSet
 type t = {
@@ -278,6 +189,79 @@ let empty = {
   count = Javascript.IdentMap.empty;
 }
 
+module Scope : sig
+  type t
+  val toplevel : unit -> t
+  val new_child : t -> t
+  val greater_common_scope : t list -> t
+  val compare : t -> t -> int
+  val to_string : t -> string
+  module Hashtbl : Hashtbl.S with type key = t
+end = struct
+  type index = int
+  type t = {
+    levels : index array;
+    mutable last_idx : index
+  }
+
+  module Hash = struct
+    type t' = t
+    type t = t'
+    let equal i j = i.levels = j.levels
+    let hash i = Hashtbl.hash i.levels
+  end
+
+  module Hashtbl = Hashtbl.Make(Hash)
+
+  let toplevel () = {levels = [||]; last_idx = 0}
+
+
+  let to_string s = String.concat "," (Array.map string_of_int s.levels |> Array.to_list)
+
+  let greater_common_scope l =
+    match l with
+    | [] -> assert false
+    | [x] -> x
+    | x::xs ->
+      let len = List.fold_left (fun acc x -> min acc (Array.length x.levels)) (Array.length x.levels) xs in
+      let idx = ref 0 in
+      let continue = ref true in
+      while !continue && !idx < len do
+        let y = x.levels.(!idx) in
+        if not (List.for_all (fun x -> x.levels.(!idx) = y) xs)
+        then continue:=false;
+        incr idx
+      done;
+      let levels = Array.sub x.levels 0 !idx in
+      let scope = {levels; last_idx = 0} in
+      scope
+
+  let new_child s =
+    let len = Array.length s.levels in
+    s.last_idx <- s.last_idx + 1;
+    let levels = Array.create (len + 1) s.last_idx in
+    Array.blit s.levels 0 levels 0 len;
+    let scope = {levels ; last_idx = 0} in
+    scope
+
+
+  exception Cmp of int
+  let compare a b =
+    let len_a = Array.length a.levels
+    and len_b = Array.length b.levels in
+    match compare len_a len_b with
+    | 0 ->
+      begin
+        try
+          for i = 0 to len_a do
+            let c = compare a.levels.(i) b.levels.(i) in
+            if c <> 0 then raise (Cmp c)
+          done;
+          0
+        with Cmp c -> c
+      end
+    | n -> n
+end
 (* def/used/free variable *)
 
 class type freevar =
@@ -295,14 +279,17 @@ class type freevar =
     method get_def : Code.VarSet.t
     method get_use_name : Util.StringSet.t
     method get_use : Code.VarSet.t
+    method get_scope : Scope.t
   end
 
 class free =
   object(m : 'test)
     inherit map as super
-  val level : int = 0
+  val scope : Scope.t = Scope.toplevel ()
   val mutable state_ : t = empty
   method state = state_
+
+  method get_scope = scope
 
   method get_free =
     S.diff m#state.use m#state.def
@@ -349,7 +336,7 @@ class free =
   method expression x = match x with
     | EVar v -> m#use_var v; x
     | EFun (ident,params,body,nid) ->
-      let tbody  = ({< state_ = empty; level = succ level  >} :> 'test) in
+      let tbody  = ({< state_ = empty; scope = Scope.new_child scope >} :> 'test) in
       let () = List.iter tbody#def_var params in
       let body = tbody#sources body in
       let ident = match ident with
@@ -364,7 +351,7 @@ class free =
 
   method source x = match x with
     | Function_declaration (id,params, body, nid) ->
-      let tbody = {< state_ = empty; level = succ level >} in
+      let tbody = {< state_ = empty; scope = Scope.new_child scope >} in
       let () = List.iter tbody#def_var params in
       let body = tbody#sources body in
       tbody#block params;
@@ -406,7 +393,7 @@ class free =
       ForIn_statement (Right r,m#expression e2, (m#statement s, loc))
     | Try_statement (b,w,f) ->
       let b = m#statements b in
-      let tbody = {< state_ = empty; level = level >} in
+      let tbody = {< state_ = empty; scope = scope >} in
       let w = match w with
         | None -> None
         | Some (id,block) ->
@@ -440,6 +427,114 @@ class free =
       Try_statement (b,w,f)
     | _ -> super#statement x
   end
+
+
+class replace_expr by_expr by_scopes =
+  let get_expr expr = Hashtbl.find by_expr expr in
+
+  object(m)
+    inherit free as super
+    method expression e = try EVar (get_expr e) with Not_found -> super#expression e
+
+    (* do not replace constant in switch case *)
+    method switch_case e =
+      match e with
+      | ENum _ | EStr _ -> e
+      | _ -> m#expression e
+
+    method sources l =
+      let l = super#sources l in
+      try
+        let all = Scope.Hashtbl.find by_scopes (m#get_scope) in
+        (Statement (Variable_statement all), N) :: l
+      with Not_found ->
+        l
+  end
+
+
+(* this optimisation should be done at the lowest common scope *)
+class share_constant = object(m)
+  inherit free as super
+
+  val scopes = Hashtbl.create 17
+
+  method expression e =
+    let e = match e with
+      | EStr (s,`Utf8) when not(Util.has_backslash s) && Util.is_ascii s ->
+        let e = EStr (s,`Bytes) in
+        let () =
+          try
+            Hashtbl.replace scopes e (m#get_scope :: Hashtbl.find scopes e)
+          with Not_found -> Hashtbl.replace scopes e [m#get_scope] in
+        e
+      | EStr (_,_)
+      | ENum _ ->
+        let () =
+          try
+            Hashtbl.replace scopes e (m#get_scope :: Hashtbl.find scopes e)
+          with Not_found -> Hashtbl.replace scopes e [m#get_scope] in
+        e
+      | _ -> e in
+    super#expression e
+
+  (* do not replace constant in switch case *)
+  method switch_case e =
+    match e with
+    | ENum _ | EStr _ -> e
+    | _ -> m#expression e
+
+  method sources l =
+    let (revl, _) =
+      List.fold_left
+        (fun (l,prolog) (x, loc) ->
+           match x with
+           | Statement (Expression_statement (EStr _)) when prolog ->
+               (x, loc) :: l, prolog
+           | x ->
+               (m#source x, loc)::l, false)
+        ([],true) l
+    in
+    List.rev revl
+
+  method program p =
+    let p = super#program p in
+    let by_scopes = Scope.Hashtbl.create 17 in
+    let by_expr   = Hashtbl.create 17 in
+    Hashtbl.iter (fun x scopes ->
+      let common = Scope.greater_common_scope scopes in
+      let n = List.length scopes in
+      let shareit = match x with
+        (* JavaScript engines recognize the pattern
+           'typeof x==="number"'; if the string is shared,
+           less efficient code is generated. *)
+        | EStr ("number", _) -> None
+        | EStr(s,_) when n > 1 ->
+          if String.length s < 20
+          then Some ("str_"^s)
+          else Some ("str_"^(String.sub s 0 16)^"_abr")
+        | ENum f when n > 1 ->
+          let s = Javascript.string_of_number f in
+          let l = String.length s in
+          if l > 2
+          then Some ("num_"^s)
+          else None
+        | _ -> None in
+      match shareit with
+      | Some name ->
+        let v = Code.Var.fresh () in
+        Code.Var.name v name;
+        let exprs =
+          try  Scope.Hashtbl.find by_scopes common
+          with Not_found -> []
+        in
+        Hashtbl.add by_expr x (V v);
+        Scope.Hashtbl.add by_scopes common ((V v, Some (x,N))::exprs);
+      | _ -> ()
+    ) scopes ;
+    if Hashtbl.length by_expr = 0
+    then p
+    else (new replace_expr by_expr by_scopes)#program p
+end
 
 
 
