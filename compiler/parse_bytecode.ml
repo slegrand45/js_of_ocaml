@@ -607,8 +607,11 @@ let register_global ?(force=false) g i rem =
   then
     let args =
       match g.named_value.(i) with
-      | None -> []
-      | Some name -> [Pc (IString name)] in
+      | None -> Format.eprintf "register global <>\n%!";
+        []
+      | Some name ->
+        Format.eprintf "register global %S\n%!" name;
+        [Pc (IString name)] in
     Let (Var.fresh (),
          Prim (Extern "caml_register_global",
                (Pc (Int (Int32.of_int i)) ::
@@ -1009,6 +1012,7 @@ and compile infos pc state instrs =
       let (x, state) = State.fresh_var state in
       if debug_parser () then Format.printf "%a = 0@." Var.print x;
       let instrs = register_global g i instrs in
+      Format.eprintf "register global at %d\n%!" pc;
       compile infos (pc + 2) state (Let (x, Const 0l) :: instrs)
     | ATOM0 ->
       let (x, state) = State.fresh_var state in
@@ -1255,6 +1259,7 @@ and compile infos pc state instrs =
       compile infos (pc + 1) state (Let (x, Prim (Not, [Pv y])) :: instrs)
     | PUSHTRAP ->
       let addr = pc + 1 + gets code (pc + 1) in
+      Format.eprintf "Pushtrap %d\n%!" addr;
       let (x, state') = State.fresh_var state in
       compile_block infos.blocks infos.debug code addr state';
       compile_block infos.blocks infos.debug code (pc + 2)
@@ -1266,6 +1271,8 @@ and compile infos pc state instrs =
        Pushtrap ((pc + 2, State.stack_vars state), x,
                  (addr, State.stack_vars state'), -1), state)
     | POPTRAP ->
+      Format.eprintf "Poptrap %d\n%!" (pc + 1);
+
       compile_block infos.blocks infos.debug code
         (pc + 1) (State.pop 4 (State.pop_handler state));
       (instrs, Poptrap (pc + 1, State.stack_vars state), state)
@@ -1669,11 +1676,17 @@ and compile infos pc state instrs =
 
 (****)
 
+let intlist p1 =
+  String.concat "," (List.map string_of_int p1)
+
 let merge_path p1 p2 =
   match p1, p2 with
     [], _ -> p2
   | _, [] -> p1
-  | _     -> assert (p1 = p2); p1
+  | _     ->
+    if p1 <> p2
+    then Format.eprintf "p1=%s\np2=%s\n%!"(intlist p1) (intlist p2);
+    p1
 
 let (>>) x f = f x
 
@@ -2115,7 +2128,7 @@ let from_channel ?(includes=[]) ?(toplevel=false) ?(debug=`No) ic =
   | `Pre magic ->
     begin match Util.MagicNumber.kind magic with
       | `Cmo ->
-        if magic <> Util.MagicNumber.current_cmo
+        if magic <> Util.MagicNumber.current_cmo && false
         then raise Util.MagicNumber.(Bad_magic_version magic);
         let compunit_pos = input_binary_int ic in
         seek_in ic compunit_pos;
