@@ -227,6 +227,8 @@ let set_target (t : [ `JavaScript | `Wasm ]) =
   | `Wasm -> Targetint.set_num_bits 31);
   target_ := (t :> [ `JavaScript | `Wasm | `None ])
 
+let php_output = ref false
+
 type effects_backend =
   [ `Disabled
   | `Cps

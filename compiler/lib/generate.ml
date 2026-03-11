@@ -1093,32 +1093,43 @@ let apply_fun_raw =
       in
       (* We skip the arity check when we know that we have the right
          number of parameters, since this test is expensive. *)
-      if exact
+      if exact && not !Config.php_output
       then apply_directly real_closure params
       else
-        let l = Utf8_string.of_string_exn "l" in
-        J.ECond
-          ( J.EBin
-              ( J.EqEqEq
-              , J.ECond
-                  ( J.EBin (J.Ge, J.dot real_closure l, int 0)
-                  , J.dot real_closure l
-                  , J.EBin
-                      ( J.Eq
-                      , J.dot real_closure l
-                      , J.dot real_closure (Utf8_string.of_string_exn "length") ) )
-              , int (List.length params) )
-          , apply_directly real_closure params
-          , J.call
-              (* Note: when double translation is enabled, [caml_call_gen*] functions takes a two-version function *)
-              (runtime_fun
-                 ctx
-                 (match Config.effects () with
-                 | `Double_translation when cps -> "caml_call_gen_cps"
-                 | `Double_translation | `Cps | `Disabled -> "caml_call_gen"
-                 | `Jspi -> assert false))
-              [ f; J.array params ]
-              J.N )
+        if !Config.php_output then
+          J.call
+            (runtime_fun
+               ctx
+               (match Config.effects () with
+               | `Double_translation when cps -> "caml_call_gen_cps"
+               | `Double_translation | `Cps | `Disabled -> "caml_call_gen"
+               | `Jspi -> assert false))
+            [ f; J.array params ]
+            J.N
+        else
+          let l = Utf8_string.of_string_exn "l" in
+          J.ECond
+            ( J.EBin
+                ( J.EqEqEq
+                , J.ECond
+                    ( J.EBin (J.Ge, J.dot real_closure l, int 0)
+                    , J.dot real_closure l
+                    , J.EBin
+                        ( J.Eq
+                        , J.dot real_closure l
+                        , J.dot real_closure (Utf8_string.of_string_exn "length") ) )
+                , int (List.length params) )
+            , apply_directly real_closure params
+            , J.call
+                (* Note: when double translation is enabled, [caml_call_gen*] functions takes a two-version function *)
+                (runtime_fun
+                   ctx
+                   (match Config.effects () with
+                   | `Double_translation when cps -> "caml_call_gen_cps"
+                   | `Double_translation | `Cps | `Disabled -> "caml_call_gen"
+                   | `Jspi -> assert false))
+                [ f; J.array params ]
+                J.N )
     in
     let apply =
       match Config.effects () with
@@ -1275,7 +1286,7 @@ let register_bin_math_prim name prim =
 
 let _ =
   register_un_prim_ctx "%caml_format_int_special" `Pure (fun ctx cx loc ->
-      let s = J.EBin (J.Plus, str_js_utf8 "", cx) in
+      let s = J.EBin (J.Dot, str_js_utf8 "", cx) in
       ocaml_string ~ctx ~loc s);
   register_un_prim "%direct_obj_tag" `Pure (fun cx _loc -> Mlvalue.Block.tag cx);
   register_bin_prims
@@ -1316,9 +1327,14 @@ let _ =
       | _ -> to_int (J.EBin (J.Minus, cx, cy)));
   register_bin_prim "%direct_int_mul" `Pure (fun cx cy _ ->
       to_int (J.EBin (J.Mul, cx, cy)));
+  register_bin_prims
+    [ "%int_div"; "caml_int32_div"; "caml_nativeint_div" ]
+    `Pure
+    (fun cx cy _ ->
+      match cx, cy with
+      | _ -> to_int (J.EBin (J.Div, cx, cy)));
   register_bin_prim "%direct_int_div" `Pure (fun cx cy _ ->
-      to_int (J.EBin (J.Div, cx, cy)));
-  register_bin_prim "%direct_int_mod" `Pure (fun cx cy _ ->
+      to_int (J.EBin (J.Div, cx, cy)));  register_bin_prim "%direct_int_mod" `Pure (fun cx cy _ ->
       to_int (J.EBin (J.Mod, cx, cy)));
   register_bin_prims
     [ "%int_and"; "caml_int32_and"; "caml_nativeint_and" ]
@@ -1676,8 +1692,8 @@ let rec translate_expr ctx loc x e level : (_ * J.statement_list) Expr_builder.t
             let* cb = access' ~ctx b in
             let rec add ca cb =
               match cb with
-              | J.EBin (J.Plus, cb1, cb2) -> J.EBin (J.Plus, add ca cb1, cb2)
-              | _ -> J.EBin (J.Plus, ca, cb)
+              | J.EBin (J.Dot, cb1, cb2) -> J.EBin (J.Dot, add ca cb1, cb2)
+              | _ -> J.EBin (J.Dot, ca, cb)
             in
             return (add ca cb)
         | Extern "caml_eq_float", [ a; b ] ->

@@ -58,6 +58,7 @@ type t =
   ; runtime_files : string list
   ; no_runtime : bool
   ; include_runtime : bool
+  ; php : bool
   ; output_file : [ `Name of string | `Stdout ] * bool
   ; bytecode : [ `File of string | `Stdin | `None ]
   ; params : (string * string) list
@@ -160,6 +161,10 @@ let options =
   let noruntime =
     let doc = "Do not include the standard runtime." in
     Arg.(value & flag & info [ "noruntime"; "no-runtime" ] ~doc)
+  in
+  let php =
+    let doc = "Generate PHP code instead of JavaScript." in
+    Arg.(value & flag & info [ "php" ] ~doc)
   in
   let include_runtime =
     let doc =
@@ -323,6 +328,7 @@ let options =
       profile
       no_runtime
       include_runtime
+      php
       no_sourcemap
       sourcemap
       sourcemap_inline_in_js
@@ -397,6 +403,7 @@ let options =
       ; runtime_files
       ; no_runtime
       ; include_runtime
+      ; php
       ; fs_files
       ; fs_output
       ; fs_external
@@ -428,6 +435,7 @@ let options =
       $ profile
       $ noruntime
       $ include_runtime
+      $ php
       $ no_sourcemap
       $ sourcemap
       $ sourcemap_inline_in_js
@@ -461,6 +469,10 @@ let options_runtime_only =
   let noruntime =
     let doc = "Do not include the standard runtime." in
     Arg.(value & flag & info [ "noruntime"; "no-runtime" ] ~doc)
+  in
+  let php =
+    let doc = "Generate PHP code instead of JavaScript." in
+    Arg.(value & flag & info [ "php" ] ~doc)
   in
   let no_sourcemap =
     let doc =
@@ -600,6 +612,7 @@ let options_runtime_only =
       target_env
       output_file
       js_files
+      php
       effects =
     let inline_source_content = not sourcemap_don't_inline_content in
     let chop_extension s = try Filename.chop_extension s with Invalid_argument _ -> s in
@@ -652,6 +665,7 @@ let options_runtime_only =
       ; runtime_files
       ; no_runtime
       ; include_runtime = false
+      ; php
       ; fs_files
       ; fs_output
       ; fs_external
@@ -687,6 +701,7 @@ let options_runtime_only =
       $ target_env
       $ output_file
       $ js_files
+      $ php
       $ effects)
   in
   Term.ret t

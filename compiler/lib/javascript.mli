@@ -108,6 +108,7 @@ and binop =
   | SlashEq
   | ModEq
   | PlusEq
+  | DotEq
   | MinusEq
   | LslEq
   | AsrEq
@@ -140,6 +141,7 @@ and binop =
   | Lsr
   | Asr
   | Plus
+  | Dot
   | Minus
   | Mul
   | Div

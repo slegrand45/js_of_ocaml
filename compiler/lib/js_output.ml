@@ -124,6 +124,10 @@ open! Stdlib
 let stats = Debug.find "output"
 
 open Javascript
+
+module StringSet = Set.Make (String)
+
+(* let has_set_v set v = StringSet.mem v set *)
 module PP = Pretty_print
 
 module Make (D : sig
@@ -132,6 +136,7 @@ module Make (D : sig
   val get_file_index : string -> int
 
   val get_name_index : string -> int
+  [@@ocaml.warning "-32"]
 
   val hidden_location : Source_map.map
 
@@ -153,6 +158,9 @@ struct
   let current_loc = ref U
 
   let last_mapping_has_a_name = ref false
+
+  (* Stack of labels that correspond to transformed blocks (for PHP) *)
+  let block_label_stack = ref []
 
   let output_debug_info f loc =
     let loc =
@@ -196,45 +204,11 @@ struct
         current_loc := loc;
         last_mapping_has_a_name := false
 
-  let output_debug_info_ident f nm_opt =
-    if source_map_enabled
-    then
-      match nm_opt with
-      | None ->
-          (* Make sure that the name of a previous identifier does not
-             bleed on this one. *)
-          output_debug_info f N
-      | Some nm ->
-          last_mapping_has_a_name := true;
-          push_mapping
-            (PP.pos f)
-            (match !current_loc with
-            | N | U | Pi { Parse_info.src = Some "" | None; _ } ->
-                (* Use a dummy location. It is going to be ignored anyway *)
-                let ori_source =
-                  match hidden_location with
-                  | Source_map.Gen_Ori { ori_source; _ } -> ori_source
-                  | _ -> 0
-                in
-                Source_map.Gen_Ori_Name
-                  { gen_line = -1
-                  ; gen_col = -1
-                  ; ori_source
-                  ; ori_line = 1
-                  ; ori_col = 0
-                  ; ori_name = get_name_index nm
-                  }
-            | Pi { Parse_info.src = Some file; line; col; _ } ->
-                Source_map.Gen_Ori_Name
-                  { gen_line = -1
-                  ; gen_col = -1
-                  ; ori_source = get_file_index file
-                  ; ori_line = line
-                  ; ori_col = col
-                  ; ori_name = get_name_index nm
-                  })
+  let sanitize_php v =
+    StringLabels.map ~f:(fun c -> if Char.equal c '$' then '_' else c) v
 
   let identName f x =
+    let x = if !Config.php_output then sanitize_php x else x in
     match Js_token.is_reserved x with
     | None -> PP.string f x
     | Some _ ->
@@ -242,17 +216,43 @@ struct
         let rest = String.sub x ~pos:1 ~len:(String.length x - 1) in
         PP.string f (Printf.sprintf "\\u{%x}%s" (Char.code x.[0]) rest)
 
-  let ident f ~kind = function
-    | S { name = Utf8 name; var = Some v; _ } ->
-        (match kind with
-        | `Binding -> output_debug_info_ident f (Code.Var.get_name v)
-        | `Reference -> ());
-        if false then PP.string f (Printf.sprintf "/* %d */" (Code.Var.idx v));
-        PP.string f name
-    | S { name = Utf8 name; var = None; _ } -> PP.string f name
-    | V v ->
+  let name_of_ident ident =
+    let n = match ident with
+      | S { name = Utf8 n; var; _ } ->
+          (match var with
+          | Some v when !Config.php_output && not (StringLabels.starts_with ~prefix:"caml_" n) ->
+              n ^ "_" ^ string_of_int (Code.Var.idx v)
+          | _ -> n)
+      | V v -> "v" ^ string_of_int (Code.Var.idx v)
+    in
+    if !Config.php_output then sanitize_php n else n
+
+  let ident ?(prefix = true) f ~kind ident =
+    match ident with
+    | S _ ->
+        let n_str = name_of_ident ident in
+        let is_param = match kind with `Binding -> true | _ -> false in
+        if !Config.php_output && prefix &&
+           (is_param
+           || not (String.equal n_str "undefined"))
+        then
+          if not is_param && StringLabels.starts_with ~prefix:"caml_" n_str
+          then PP.string f ("$GLOBALS['" ^ n_str ^ "']")
+          else (
+            (* Sanitize $ in identifier names for PHP output *)
+            let sanitized =
+              StringLabels.map ~f:(fun c -> if Char.equal c '$' then '_' else c) n_str
+            in
+            PP.string f ("$" ^ sanitized)
+          )
+        else if !Config.php_output && String.equal n_str "undefined" then PP.string f "null"
+        else PP.string f n_str
+    | V _ ->
         assert accept_unnamed_var;
-        PP.string f (Format.asprintf "<%a>" Code.Var.print v)
+        let n_str = name_of_ident ident in
+        if !Config.php_output && prefix
+        then PP.string f ("$" ^ n_str)
+        else PP.string f ("<" ^ n_str ^ ">")
 
   let opt_identifier f ~kind i =
     match i with
@@ -310,6 +310,7 @@ struct
     | SlashEq
     | ModEq
     | PlusEq
+    | DotEq
     | MinusEq
     | LslEq
     | AsrEq
@@ -332,7 +333,7 @@ struct
     | Gt | GtInt | Ge | GeInt | Lt | LtInt | Le | LeInt | InstanceOf | In ->
         RelationalExpression, RelationalExpression, ShiftExpression
     | Lsl | Lsr | Asr -> ShiftExpression, ShiftExpression, AdditiveExpression
-    | Plus | Minus -> AdditiveExpression, AdditiveExpression, MultiplicativeExpression
+    | Plus | Dot | Minus -> AdditiveExpression, AdditiveExpression, MultiplicativeExpression
     | Mul | Div | Mod ->
         MultiplicativeExpression, MultiplicativeExpression, ExponentiationExpression
     | Exp -> ExponentiationExpression, UpdateExpression, ExponentiationExpression
@@ -344,6 +345,7 @@ struct
     | SlashEq -> "/="
     | ModEq -> "%="
     | PlusEq -> "+="
+    | DotEq -> ".="
     | MinusEq -> "-="
     | Or -> "||"
     | OrEq -> "||="
@@ -370,6 +372,7 @@ struct
     | Lsr -> ">>>"
     | Asr -> ">>"
     | Plus -> "+"
+    | Dot -> if !Config.php_output then "." else "+"
     | Minus -> "-"
     | Mul -> "*"
     | Div -> "/"
@@ -625,65 +628,156 @@ struct
     match e with
     | EVar v -> ident f ~kind:`Reference v
     | ESeq (e1, e2) ->
-        if Prec.(l > Expression)
+        if !Config.php_output
         then (
-          PP.start_group f 1;
-          PP.string f "(");
-        expression Expression f e1;
-        PP.string f ",";
-        PP.space f;
-        expression Expression f e2;
-        if Prec.(l > Expression)
-        then (
+          (* In PHP, sequences need to use caml_seq helper since PHP doesn't have comma operator *)
+          if Prec.(l > Expression)
+          then (
+            PP.start_group f 1;
+            PP.string f "(");
+          PP.string f "caml_seq(";
+          expression Expression f e1;
+          PP.string f ", ";
+          expression Expression f e2;
           PP.string f ")";
-          PP.end_group f)
+          if Prec.(l > Expression)
+          then (
+            PP.string f ")";
+            PP.end_group f))
+        else (
+          if Prec.(l > Expression)
+          then (
+            PP.start_group f 1;
+            PP.string f "(");
+          expression Expression f e1;
+          PP.string f ",";
+          PP.space f;
+          expression Expression f e2;
+          if Prec.(l > Expression)
+          then (
+            PP.string f ")";
+            PP.end_group f))
     | EFun (i, decl) -> function_declaration' f i decl
     | EClass (i, cl_decl) -> class_declaration f i cl_decl
-    | EArrow ((k, p, b, pc), consise, _) ->
+    | EArrow ((k, p, b, pc), consise, _arrow_info) ->
         if Prec.(l > AssignementExpression)
         then (
           PP.start_group f 1;
           PP.string f "(");
-        PP.start_group f 1;
-        PP.start_group f 0;
-        (match k with
-        | { async = true; generator = false } ->
-            PP.string f "async";
-            PP.non_breaking_space f
-        | { async = false; generator = false } -> ()
-        | { async = true | false; generator = true } -> assert false);
-        (match p with
-        | { list = [ ((BindingIdent _, None) as x) ]; rest = None } ->
-            formal_parameter f x;
-            PP.string f "=>"
-        | _ ->
-            PP.start_group f 1;
-            PP.string f "(";
-            formal_parameter_list f p;
-            PP.string f ")=>";
-            PP.end_group f);
-        PP.end_group f;
-        (match b, consise with
-        | [ (Return_statement (Some e, loc), loc') ], true ->
-            (* Should not starts with '{' *)
-            PP.start_group f 1;
-            PP.break1 f;
-            output_debug_info f loc';
-            parenthesized_expression ~obj:true AssignementExpression f e;
-            PP.end_group f;
-            output_debug_info f loc
-        | l, _ ->
-            let b =
-              match l with
-              | [ (Block l, _) ] -> l
-              | l -> l
+        if !Config.php_output
+        then (
+          (* PHP does not support arrow functions with =>, use anonymous functions instead *)
+          PP.start_group f 1;
+          PP.start_group f 0;
+          (match k with
+          | { async = true; generator = false } ->
+              PP.string f "async function";
+              PP.non_breaking_space f
+          | { async = false; generator = false } ->
+              PP.string f "function";
+              PP.non_breaking_space f
+          | { async = true | false; generator = true } -> assert false);
+          PP.string f "(";
+          formal_parameter_list f p;
+          PP.string f ")";
+          (* Calculate and output use clause *)
+          (* Collect uses from function body *)
+          let body_uses = collect_uses_in_statement_list [] b in
+          (* Collect defs from function body *)
+          let body_defs = collect_defs_in_statement_list [] b in
+          let param_names = get_param_names p in
+          (* Free vars = Uses \ (Defs U Params U Globals) *)
+          let all_defs = List.concat [ body_defs; param_names ] in
+          let free_vars =
+            List.filter body_uses ~f:(fun v ->
+                not (List.mem ~eq:String.equal v all_defs)
+                && not (String.equal v "globalThis")
+                && not (String.equal v "undefined")
+                && not (String.equal v "NaN")
+                && not (String.equal v "Infinity")
+                && not (StringLabels.starts_with ~prefix:"caml_" v))
+          in
+          if not (List.is_empty free_vars)
+          then (
+            PP.string f " use (";
+            let vars = List.sort_uniq ~cmp:String.compare free_vars in
+            let rec output_vars = function
+              | [] -> ()
+              | [ v ] ->
+                  PP.string f "&$";
+                  PP.string f (sanitize_php v)
+              | v :: rest ->
+                  PP.string f "&$";
+                  PP.string f (sanitize_php v);
+                  PP.string f ", ";
+                  output_vars rest
             in
-            PP.string f "{";
-            PP.break f;
-            function_body f b;
-            output_debug_info f pc;
-            PP.string f "}");
-        PP.end_group f;
+            output_vars vars;
+            PP.string f ")");
+          PP.end_group f;
+          (match b, consise with
+          | [ (Return_statement (Some e, _loc'), loc'') ], true ->
+              PP.string f " {";
+              PP.break f;
+              output_debug_info f loc'';
+              PP.string f "return ";
+              parenthesized_expression ~obj:true AssignementExpression f e;
+              PP.string f ";";
+              output_debug_info f pc;
+              PP.string f "}";
+          | l, _ ->
+              let b =
+                match l with
+                | [ (Block l, _) ] -> l
+                | l -> l
+              in
+              PP.string f " {";
+              PP.break f;
+              function_body f b;
+              output_debug_info f pc;
+              PP.string f "}");
+          PP.end_group f)
+        else (
+          (* JavaScript arrow function output *)
+          PP.start_group f 1;
+          PP.start_group f 0;
+          (match k with
+          | { async = true; generator = false } ->
+              PP.string f "async";
+              PP.non_breaking_space f
+          | { async = false; generator = false } -> ()
+          | { async = true | false; generator = true } -> assert false);
+          (match p with
+          | { list = [ ((BindingIdent _, None) as x) ]; rest = None } ->
+              formal_parameter f x;
+              PP.string f "=>"
+          | _ ->
+              PP.start_group f 1;
+              PP.string f "(";
+              formal_parameter_list f p;
+              PP.string f ")=>";
+              PP.end_group f);
+          PP.end_group f;
+          (match b, consise with
+          | [ (Return_statement (Some e, _loc'), _loc'') ], true ->
+              (* Should not starts with '{' *)
+              PP.start_group f 1;
+              PP.break1 f;
+              parenthesized_expression ~obj:true AssignementExpression f e;
+              PP.end_group f;
+              output_debug_info f pc
+          | l, _ ->
+              let b =
+                match l with
+                | [ (Block l, _) ] -> l
+                | l -> l
+              in
+              PP.string f "{";
+              PP.break f;
+              function_body f b;
+              output_debug_info f pc;
+              PP.string f "}");
+          PP.end_group f);
         if Prec.(l > AssignementExpression)
         then (
           PP.string f ")";
@@ -758,17 +852,39 @@ struct
           PP.start_group f 1;
           PP.string f "(");
         PP.start_group f 0;
-        let name =
+        if !Config.php_output
+        then
           match op with
-          | Typeof -> "typeof"
-          | Void -> "void"
-          | Delete -> "delete"
-          | Await -> "await"
+          | Typeof ->
+              PP.string f "caml_typeof(";
+              expression p f e;
+              PP.string f ")"
+          | Void ->
+              (* void e in PHP is just null *)
+              PP.string f "null"
+          | Delete ->
+              (* Fallback for delete - should not happen in normal OCaml code *)
+              PP.string f "delete";
+              PP.space f;
+              expression p f e
+          | Await ->
+              (* Fallback for await - should not happen in normal OCaml code *)
+              PP.string f "await";
+              PP.space f;
+              expression p f e
           | _ -> assert false
-        in
-        PP.string f name;
-        PP.space f;
-        expression p f e;
+        else (
+          let name =
+            match op with
+            | Typeof -> "typeof"
+            | Void -> "void"
+            | Delete -> "delete"
+            | Await -> "await"
+            | _ -> assert false
+          in
+          PP.string f name;
+          PP.space f;
+          expression p f e);
         PP.end_group f;
         if Prec.(l > p)
         then (
@@ -827,15 +943,21 @@ struct
         PP.start_group f 0;
         expression lft f e1;
         PP.space f;
-        let name =
-          match op with
-          | InstanceOf -> "instanceof"
-          | In -> "in"
-          | _ -> assert false
-        in
-        PP.string f name;
-        PP.space f;
-        expression rght f e2;
+        (match op with
+        | InstanceOf when !Config.php_output ->
+            (* In PHP, use instanceof with proper class name handling *)
+            PP.string f "instanceof ";
+            expression rght f e2
+        | _ ->
+            let name =
+              match op with
+              | InstanceOf -> "instanceof"
+              | In -> "in"
+              | _ -> assert false
+            in
+            PP.string f name;
+            PP.space f;
+            expression rght f e2);
         PP.end_group f;
         if Prec.(l > out)
         then (
@@ -850,7 +972,6 @@ struct
            | MinusEq
            | LslEq
            | AsrEq
-           | LsrEq
            | BandEq
            | BxorEq
            | BorEq
@@ -881,6 +1002,29 @@ struct
         PP.end_group f;
         if Prec.(l > out) then PP.string f ")";
         PP.end_group f
+    | EBin (LsrEq, e1, e2) ->
+        (* Special handling for LsrEq (>>>=) in PHP mode *)
+        let out, lft, rght = op_prec LsrEq in
+        PP.start_group f 0;
+        if Prec.(l > out) then PP.string f "(";
+        expression lft f e1;
+        if !Config.php_output then
+          begin
+            PP.string f " = caml_shift_right_unsigned(";
+            expression lft f e1;
+            PP.string f ", ";
+            expression rght f e2;
+            PP.string f ")";
+          end
+        else
+          begin
+            PP.space f;
+            PP.string f ">>>=";
+            PP.space f;
+            expression rght f e2;
+          end;
+        if Prec.(l > out) then PP.string f ")";
+        PP.end_group f
     | EBin (op, e1, e2) ->
         let out, lft, rght = op_prec op in
         let lft =
@@ -890,17 +1034,33 @@ struct
           | EBin (Coalesce, _, _), Coalesce -> CoalesceExpression
           | _ -> lft
         in
-        PP.start_group f 0;
-        if Prec.(l > out) then PP.string f "(";
-        expression lft f e1;
-        PP.space f;
-        PP.start_group f 1;
-        PP.string f (op_str op);
-        PP.space f;
-        expression rght f e2;
-        if Prec.(l > out) then PP.string f ")";
-        PP.end_group f;
-        PP.end_group f
+        (* Special handling for Lsr (>>>) in PHP mode *)
+        if !Config.php_output && Poly.equal op Lsr then
+          begin
+            PP.start_group f 0;
+            if Prec.(l > out) then PP.string f "(";
+            PP.string f "caml_shift_right_unsigned(";
+            expression lft f e1;
+            PP.string f ", ";
+            expression rght f e2;
+            PP.string f ")";
+            if Prec.(l > out) then PP.string f ")";
+            PP.end_group f
+          end
+        else
+          begin
+            PP.start_group f 0;
+            if Prec.(l > out) then PP.string f "(";
+            expression lft f e1;
+            PP.space f;
+            PP.start_group f 1;
+            PP.string f (op_str op);
+            PP.space f;
+            expression rght f e2;
+            if Prec.(l > out) then PP.string f ")";
+            PP.end_group f;
+            PP.end_group f
+          end
     | EAssignTarget t -> (
         let property f p =
           match p with
@@ -970,9 +1130,11 @@ struct
             PP.end_group f)
     | EArr el ->
         PP.start_group f 1;
+        if !Config.php_output then PP.string f "new CamlBlock(";
         PP.string f "[";
         element_list f el;
         PP.string f "]";
+        if !Config.php_output then PP.string f ")";
         PP.end_group f
     | EAccess (e, access_kind, e') ->
         PP.start_group f 1;
@@ -981,32 +1143,67 @@ struct
           | NewExpression | MemberExpression -> MemberExpression
           | _ -> CallOrMemberExpression
         in
-        expression l' f e;
-        PP.break f;
-        PP.start_group f 1;
-        (match access_kind with
-        | ANormal -> PP.string f "["
-        | ANullish -> PP.string f "?.[");
-        expression Expression f e';
-        PP.string f "]";
-        PP.end_group f;
+        if !Config.php_output then
+          match e with
+          | EVar (S { name = Utf8 "globalThis"; _ }) ->
+              PP.string f "$GLOBALS[";
+              expression Expression f e';
+              PP.string f "]"
+          | _ ->
+              expression l' f e;
+              PP.break f;
+              PP.start_group f 1;
+              (match access_kind with
+              | ANormal -> PP.string f "["
+              | ANullish -> PP.string f "?.[");
+              expression Expression f e';
+              PP.string f "]";
+              PP.end_group f
+        else (
+          expression l' f e;
+          PP.break f;
+          PP.start_group f 1;
+          (match access_kind with
+          | ANormal -> PP.string f "["
+          | ANullish -> PP.string f "?.[");
+          expression Expression f e';
+          PP.string f "]";
+          PP.end_group f);
         PP.end_group f
     | EDot (e, access_kind, Utf8 nm) ->
-        (* We keep tracks of whether call expression are allowed
-           without parentheses within this expression *)
-        let l' =
-          match l with
-          | NewExpression | MemberExpression -> MemberExpression
-          | _ -> CallOrMemberExpression
-        in
-        expression l' f e;
-        (match access_kind with
-        | ANormal -> PP.string f "."
-        | ANullish -> PP.string f "?.");
-        PP.string f nm
+        if !Config.php_output then
+          if String.equal nm "length" then
+            (* PHP doesn't support ->length on arrays, use caml_js_length helper *)
+            (PP.string f "caml_js_length(";
+             expression CallOrMemberExpression f e;
+             PP.string f ")")
+          else
+            match e with
+            | EVar (S { name = Utf8 "globalThis"; _ }) ->
+                PP.string f "$GLOBALS['";
+                PP.string f nm;
+                PP.string f "']"
+            | _ ->
+                let l' =
+                  match l with
+                  | NewExpression | MemberExpression -> MemberExpression
+                  | _ -> CallOrMemberExpression
+                in
+                expression l' f e;
+                PP.string f "->";
+                PP.string f nm
+        else (
+          let l' =
+            match l with
+            | NewExpression | MemberExpression -> MemberExpression
+            | _ -> CallOrMemberExpression
+          in
+          expression l' f e;
+          (match access_kind with
+          | ANormal -> PP.string f "."
+          | ANullish -> PP.string f "?.");
+          PP.string f nm)
     | EDotPrivate (e, access_kind, Utf8 nm) ->
-        (* We keep tracks of whether call expression are allowed
-           without parentheses within this expression *)
         let l' =
           match l with
           | NewExpression | MemberExpression -> MemberExpression
@@ -1014,8 +1211,8 @@ struct
         in
         expression l' f e;
         (match access_kind with
-        | ANormal -> PP.string f ".#"
-        | ANullish -> PP.string f "?.#");
+        | ANormal -> PP.string f "->"
+        | ANullish -> PP.string f "?->");
         PP.string f nm
     | ENew (e, None, loc) ->
         if Prec.(l > NewExpression)
@@ -1068,8 +1265,13 @@ struct
         PP.string f ":";
         PP.space f;
         PP.end_group f;
-        expression AssignementExpression f e2;
-        PP.end_group f;
+        (if !Config.php_output
+         then (
+           (* PHP 8+ requires parentheses around nested ternaries in else branch *)
+           PP.string f "(";
+           expression AssignementExpression f e2;
+           PP.string f ")")
+         else expression AssignementExpression f e2);        PP.end_group f;
         PP.end_group f;
         if Prec.(l > ConditionalExpression)
         then (
@@ -1199,7 +1401,9 @@ struct
 
   and element f (e : element) =
     match e with
-    | ElementHole -> ()
+    | ElementHole ->
+        (* In PHP, array holes must be filled with null to avoid fatal errors *)
+        if !Config.php_output then PP.string f "null"
     | Element e ->
         PP.start_group f 0;
         expression AssignementExpression f e;
@@ -1222,6 +1426,349 @@ struct
       rest
 
   and function_body f b = statement_list f ~skip_last_semi:true b
+
+  (* Collect variables defined (bound) in a statement list *)
+  and extract_name_from_binding = function
+    | BindingIdent id -> Some (name_of_ident id)
+    | BindingPattern _ -> None
+
+  and get_param_names l =
+    let names = List.fold_left l.list ~init:[] ~f:(fun acc (binding, _) ->
+        match extract_name_from_binding binding with
+        | Some n -> n :: acc
+        | None -> acc) in
+    match l.rest with
+    | None -> names
+    | Some rest ->
+        (match extract_name_from_binding rest with
+        | Some n -> n :: names
+        | None -> names)
+
+  and collect_defs_in_statement_list : string list -> statement_list -> string list =
+   fun defs l ->
+    List.fold_left l ~init:defs ~f:collect_defs_in_statement
+
+  and collect_defs_in_statement : string list -> statement * location -> string list =
+   fun defs (s, _) ->
+    match s with
+    | Block b -> collect_defs_in_statement_list defs b
+    | Variable_statement (_, decls) ->
+        (* Collect identifiers from variable declarations *)
+        List.fold_left decls ~init:defs ~f:(fun defs decl ->
+            match decl with
+            | DeclIdent (i, _) -> name_of_ident i :: defs
+            | DeclPattern _ -> defs)
+    | Function_declaration (i, _) ->
+        (* Collect function name if named *)
+        name_of_ident i :: defs
+    | Class_declaration (i, _) ->
+        (* Collect class name if named *)
+        name_of_ident i :: defs
+    | Empty_statement
+    | Continue_statement _
+    | Break_statement _
+    | Return_statement _
+    | Debugger_statement
+    | Throw_statement _ -> defs
+    | Expression_statement _ -> defs
+    | If_statement (_, s1, s2) ->
+        let defs = collect_defs_in_statement defs s1 in
+        (match s2 with
+        | None -> defs
+        | Some s2 -> collect_defs_in_statement defs s2)
+    | Do_while_statement (s, _) -> collect_defs_in_statement defs s
+    | While_statement (_, s) -> collect_defs_in_statement defs s
+    | For_statement (e1, _, _, s) ->
+        let defs =
+          match e1 with
+          | Left _ -> defs
+          | Right (_, decls) ->
+              List.fold_left decls ~init:defs ~f:(fun defs decl ->
+                  match decl with
+                  | DeclIdent (i, _) -> name_of_ident i :: defs
+                  | DeclPattern _ -> defs)
+        in
+        collect_defs_in_statement defs s
+    | ForIn_statement (e1, _, s)
+    | ForOf_statement (e1, _, s)
+    | ForAwaitOf_statement (e1, _, s) ->
+        let defs =
+          match e1 with
+          | Left _ -> defs
+          | Right (_, binding) ->
+              (match binding with
+              | BindingIdent i -> name_of_ident i :: defs
+              | BindingPattern _ -> defs)
+        in
+        collect_defs_in_statement defs s
+    | With_statement (_, s) -> collect_defs_in_statement defs s
+    | Labelled_statement (_, s) -> collect_defs_in_statement defs s
+    | Switch_statement (_, cc, def, cc') ->
+        let defs =
+          List.fold_left cc ~init:defs ~f:(fun defs (_, sl) ->
+              collect_defs_in_statement_list defs sl)
+        in
+        let defs =
+          match def with
+          | None -> defs
+          | Some def -> collect_defs_in_statement_list defs def
+        in
+        List.fold_left cc' ~init:defs ~f:(fun defs (_, sl) ->
+            collect_defs_in_statement_list defs sl)
+    | Try_statement (b, ctch, fin) ->
+        let defs = collect_defs_in_statement_list defs b in
+        let defs =
+          match ctch with
+          | None -> defs
+          | Some (param, b) ->
+              let defs =
+                match param with
+                | None -> defs
+                | Some (binding, _) ->
+                    (match binding with
+                    | BindingIdent i -> name_of_ident i :: defs
+                    | BindingPattern _ -> defs)
+              in
+              collect_defs_in_statement_list defs b
+        in
+        (match fin with
+        | None -> defs
+        | Some b -> collect_defs_in_statement_list defs b)
+    | Import _
+    | Export _ -> defs
+
+  (* Collect variables used (referenced) in a statement list - returns string list for PHP use clause *)
+  and collect_uses_in_statement_list : string list -> statement_list -> string list =
+   fun uses l ->
+    List.fold_left l ~init:uses ~f:collect_uses_in_statement
+
+  and collect_uses_in_statement : string list -> statement * location -> string list =
+   fun uses (s, _) ->
+    match s with
+    | Block b -> collect_uses_in_statement_list uses b
+    | Variable_statement (_, decls) ->
+        List.fold_left decls ~init:uses ~f:collect_uses_in_variable_declaration
+    | Function_declaration (_, (_, _, body, _)) ->
+        collect_uses_in_statement_list uses body
+    | Class_declaration (_, { body; _ }) ->
+        List.fold_left body ~init:uses ~f:(fun uses elt ->
+            match elt with
+            | CEMethod (_, _, _, m) ->
+                (match m with
+                | MethodGet (_, _, body, _)
+                | MethodSet (_, _, body, _)
+                | Method (_, _, body, _) ->
+                    collect_uses_in_statement_list uses body)
+            | CEField (_, _, _, Some (e, _)) ->
+                collect_uses_in_expression uses e
+            | CEAccessor (_, _, _, Some (e, _)) ->
+                collect_uses_in_expression uses e
+            | CEStaticBLock body ->
+                collect_uses_in_statement_list uses body
+            | _ -> uses)
+    | Empty_statement
+    | Continue_statement _
+    | Break_statement _
+    | Return_statement (None, _)
+    | Debugger_statement -> uses
+    | Expression_statement e -> collect_uses_in_expression uses e
+    | If_statement (e, s1, s2) ->
+        let uses = collect_uses_in_expression uses e in
+        let uses = collect_uses_in_statement uses s1 in
+        (match s2 with
+        | None -> uses
+        | Some s2 -> collect_uses_in_statement uses s2)
+    | Do_while_statement (s, e) ->
+        let uses = collect_uses_in_statement uses s in
+        collect_uses_in_expression uses e
+    | While_statement (e, s) ->
+        let uses = collect_uses_in_expression uses e in
+        collect_uses_in_statement uses s
+    | For_statement (e1, e2, e3, s) ->
+        let uses =
+          match e1 with
+          | Left None -> uses
+          | Left (Some e) -> collect_uses_in_expression uses e
+          | Right (_, decls) ->
+              List.fold_left decls ~init:uses ~f:collect_uses_in_variable_declaration
+        in
+        let uses =
+          match e2 with
+          | None -> uses
+          | Some e -> collect_uses_in_expression uses e
+        in
+        let uses =
+          match e3 with
+          | None -> uses
+          | Some e -> collect_uses_in_expression uses e
+        in
+        collect_uses_in_statement uses s
+    | ForIn_statement (e1, e2, s) ->
+        let uses =
+          match e1 with
+          | Left e -> collect_uses_in_expression uses e
+          | Right _ -> uses
+        in
+        let uses = collect_uses_in_expression uses e2 in
+        collect_uses_in_statement uses s
+    | ForOf_statement (e1, e2, s)
+    | ForAwaitOf_statement (e1, e2, s) ->
+        let uses =
+          match e1 with
+          | Left e -> collect_uses_in_expression uses e
+          | Right _ -> uses
+        in
+        let uses = collect_uses_in_expression uses e2 in
+        collect_uses_in_statement uses s
+    | Return_statement (Some e, _) -> collect_uses_in_expression uses e
+    | With_statement (e, s) ->
+        let uses = collect_uses_in_expression uses e in
+        collect_uses_in_statement uses s
+    | Labelled_statement (_, s) -> collect_uses_in_statement uses s
+    | Switch_statement (e, cc, def, cc') ->
+        let uses = collect_uses_in_expression uses e in
+        let uses =
+          List.fold_left cc ~init:uses ~f:(fun uses (e, sl) ->
+              let uses = collect_uses_in_expression uses e in
+              collect_uses_in_statement_list uses sl)
+        in
+        let uses =
+          match def with
+          | None -> uses
+          | Some def -> collect_uses_in_statement_list uses def
+        in
+        List.fold_left cc' ~init:uses ~f:(fun uses (e, sl) ->
+            let uses = collect_uses_in_expression uses e in
+            collect_uses_in_statement_list uses sl)
+    | Throw_statement e -> collect_uses_in_expression uses e
+    | Try_statement (b, ctch, fin) ->
+        let uses = collect_uses_in_statement_list uses b in
+        let uses =
+          match ctch with
+          | None -> uses
+          | Some (_, b) -> collect_uses_in_statement_list uses b
+        in
+        (match fin with
+        | None -> uses
+        | Some b -> collect_uses_in_statement_list uses b)
+    | Import _
+    | Export _ -> uses
+
+  and collect_uses_in_variable_declaration : string list -> variable_declaration -> string list =
+   fun uses decl ->
+    match decl with
+    | DeclIdent (_, None) -> uses
+    | DeclIdent (_, Some (e, _)) -> collect_uses_in_expression uses e
+    | DeclPattern (_, (e, _)) -> collect_uses_in_expression uses e
+
+  and collect_uses_in_expression : string list -> expression -> string list =
+   fun uses e ->
+    match e with
+    | EVar i -> name_of_ident i :: uses
+    | ESeq (e1, e2) ->
+        let uses = collect_uses_in_expression uses e1 in
+        collect_uses_in_expression uses e2
+    | ECond (e1, e2, e3) ->
+        let uses = collect_uses_in_expression uses e1 in
+        let uses = collect_uses_in_expression uses e2 in
+        collect_uses_in_expression uses e3
+    | EAssignTarget t -> collect_uses_in_assignment_target uses t
+    | EBin (_, e1, e2) ->
+        let uses = collect_uses_in_expression uses e1 in
+        collect_uses_in_expression uses e2
+    | EUn (_, e) -> collect_uses_in_expression uses e
+    | ECall (e, _, args, _) ->
+        let uses = collect_uses_in_expression uses e in
+        List.fold_left args ~init:uses ~f:(fun uses arg ->
+            match arg with
+            | Arg e | ArgSpread e -> collect_uses_in_expression uses e)
+    | ECallTemplate (e, t, _) ->
+        let uses = collect_uses_in_expression uses e in
+        List.fold_left t ~init:uses ~f:(fun uses part ->
+            match part with
+            | TStr _ -> uses
+            | TExp e -> collect_uses_in_expression uses e)
+    | EAccess (e, _, e') ->
+        let uses = collect_uses_in_expression uses e in
+        collect_uses_in_expression uses e'
+    | EDot (e, _, _)
+    | EDotPrivate (e, _, _) -> collect_uses_in_expression uses e
+    | ENew (e, args, _) ->
+        let uses = collect_uses_in_expression uses e in
+        (match args with
+        | None -> uses
+        | Some args ->
+            List.fold_left args ~init:uses ~f:(fun uses arg ->
+                match arg with
+                | Arg e | ArgSpread e -> collect_uses_in_expression uses e))
+    | EFun (name, (_, params, body, _)) ->
+        let body_uses = collect_uses_in_statement_list [] body in
+        let body_defs = collect_defs_in_statement_list [] body in
+        let param_names = get_param_names params in
+        let func_name = match name with 
+          | Some i -> [name_of_ident i]
+          | _ -> [] in
+        let all_local_defs = List.concat [ body_defs; param_names; func_name ] in
+        let free_vars = List.filter body_uses ~f:(fun v -> not (List.mem ~eq:String.equal v all_local_defs)) in
+        List.append free_vars uses
+    | EClass _ -> uses
+    | EArrow ((_, params, body, _), _, _) ->
+        let body_uses = 
+          let b = match body with | [ (Block l, _) ] -> l | l -> l in
+          collect_uses_in_statement_list [] b in
+        let body_defs = 
+          let b = match body with | [ (Block l, _) ] -> l | l -> l in
+          collect_defs_in_statement_list [] b in
+        let param_names = get_param_names params in
+        let all_local_defs = List.concat [ body_defs; param_names ] in
+        let free_vars = List.filter body_uses ~f:(fun v -> not (List.mem ~eq:String.equal v all_local_defs)) in
+        List.append free_vars uses    | EStr _
+    | ETemplate _ -> uses
+    | EArr el ->
+        List.fold_left el ~init:uses ~f:(fun uses elt ->
+            match elt with
+            | ElementHole -> uses
+            | Element e | ElementSpread e -> collect_uses_in_expression uses e)
+    | EBool _
+    | ENum _ -> uses
+    | EObj lst ->
+        List.fold_left lst ~init:uses ~f:(fun uses prop ->
+            match prop with
+            | Property (_, e) -> collect_uses_in_expression uses e
+            | PropertyMethod (_, Method (_, _, _, _))
+            | PropertyMethod (_, MethodGet _)
+            | PropertyMethod (_, MethodSet _) ->
+                collect_uses_in_expression uses e
+            | PropertySpread e -> collect_uses_in_expression uses e
+            | CoverInitializedName _ -> uses)
+    | ERegexp _ -> uses
+    | EYield { expr; _ } ->
+        (match expr with
+        | None -> uses
+        | Some e -> collect_uses_in_expression uses e)
+    | EPrivName _
+    | CoverCallExpressionAndAsyncArrowHead _
+    | CoverParenthesizedExpressionAndArrowParameterList _ -> uses
+
+  and collect_uses_in_assignment_target : string list -> assignment_target -> string list =
+   fun uses t ->
+    match t with
+    | ObjectTarget list ->
+        List.fold_left list ~init:uses ~f:(fun uses prop ->
+            match prop with
+            | TargetPropertyId (_, None) -> uses
+            | TargetPropertyId (_, Some (e, _)) -> collect_uses_in_expression uses e
+            | TargetProperty (_, e, _) -> collect_uses_in_expression uses e
+            | TargetPropertySpread e -> collect_uses_in_expression uses e
+            | TargetPropertyMethod _ -> uses)
+    | ArrayTarget list ->
+        List.fold_left list ~init:uses ~f:(fun uses elt ->
+            match elt with
+            | TargetElementHole -> uses
+            | TargetElementId (_, None) -> uses
+            | TargetElementId (_, Some (e, _))
+            | TargetElement e
+            | TargetElementSpread e -> collect_uses_in_expression uses e)
 
   and argument f a =
     PP.start_group f 0;
@@ -1354,21 +1901,27 @@ struct
     | [ d ] -> variable_declaration f ?in_ d
     | d :: r ->
         variable_declaration f ?in_ d;
-        PP.string f ",";
+        if !Config.php_output then PP.string f ";" else PP.string f ",";
         PP.space f;
         variable_declaration_list_aux f ?in_ r
 
   and variable_declaration_kind f kind =
     match kind with
     | Var ->
-        PP.string f "var";
-        PP.space f
+        if not !Config.php_output
+        then (
+          PP.string f "var";
+          PP.space f)
     | Let ->
-        PP.string f "let";
-        PP.space f
+        if not !Config.php_output
+        then (
+          PP.string f "let";
+          PP.space f)
     | Const ->
-        PP.string f "const";
-        PP.space f
+        if not !Config.php_output
+        then (
+          PP.string f "const";
+          PP.space f)
     | Using ->
         PP.string f "using";
         PP.non_breaking_space f
@@ -1447,7 +2000,17 @@ struct
     if stop_on_statement s then output_debug_info f loc;
     match s with
     | Block b -> block f b
-    | Variable_statement (k, l) -> variable_declaration_list k (not can_omit_semi) f l
+    | Variable_statement (k, l) ->
+        if !Config.php_output && List.length l > 1
+        then (
+          PP.start_group f 1;
+          PP.string f "{";
+          PP.break f;
+          variable_declaration_list k true f l;
+          PP.end_group f;
+          PP.break f;
+          PP.string f "}")
+        else variable_declaration_list k (not can_omit_semi) f l
     | Function_declaration (i, decl) -> function_declaration' f (Some i) decl
     | Class_declaration (i, cl_decl) -> class_declaration f (Some i) cl_decl
     | Empty_statement -> PP.string f ";"
@@ -1642,17 +2205,23 @@ struct
         PP.string f "break";
         last_semi ()
     | Break_statement (Some s) ->
-        PP.string f "break ";
         let (Utf8 l) = name_of_label s in
-        identName f l;
-        last_semi ()
+        if !Config.php_output && List.mem ~eq:String.equal l !block_label_stack
+        then (
+          (* Breaking from a transformed block - just use break without label *)
+          PP.string f "break";
+          last_semi ())
+        else (
+          PP.string f "break ";
+          identName f l;
+          last_semi ())
     | Return_statement (e, loc) -> (
         match e with
         | None ->
             PP.string f "return";
             output_debug_info f loc;
             last_semi ~ret:true ()
-        | Some (EFun (i, ({ async = false; generator = false }, l, b, pc))) ->
+        | Some (EFun (i, ({ async = false; generator = false }, l, b, pc))) when not !Config.php_output ->
             PP.start_group f 1;
             PP.start_group f 0;
             PP.start_group f 0;
@@ -1689,10 +2258,42 @@ struct
         )
     | Labelled_statement (i, s) ->
         let (Utf8 l) = name_of_label i in
-        identName f l;
-        PP.string f ":";
-        PP.space f;
-        statement ~last f s
+        if !Config.php_output
+        then (
+          (* PHP doesn't support labeled blocks, only labeled loops *)
+          match s with
+          | Block b, _loc ->
+              (* Transform label: { } to do { } while(false) *)
+              block_label_stack := l :: !block_label_stack;
+              PP.string f "do";
+              statement1 ~last f (Block b, _loc);
+              PP.break f;
+              PP.string f "while(false);";
+              block_label_stack := List.tl !block_label_stack
+          | (While_statement (_, _)
+            | For_statement (_, _, _, _)
+            | ForIn_statement (_, _, _)
+            | ForOf_statement (_, _, _)
+            | ForAwaitOf_statement (_, _, _)
+            | Do_while_statement (_, _)), _ ->
+              (* For loops, keep the label *)
+              identName f l;
+              PP.string f ":";
+              PP.space f;
+              statement ~last f s
+          | _ ->
+              (* For other statements (if, etc.), wrap in do-while(false) *)
+              block_label_stack := l :: !block_label_stack;
+              PP.string f "do";
+              statement1 ~last f s;
+              PP.break f;
+              PP.string f "while(false);";
+              block_label_stack := List.tl !block_label_stack)
+        else (
+          identName f l;
+          PP.string f ":";
+          PP.space f;
+          statement ~last f s)
     | Switch_statement (e, cc, def, cc') ->
         PP.start_group f 1;
         PP.start_group f 0;
@@ -1756,7 +2357,13 @@ struct
         PP.string f "throw";
         PP.non_breaking_space f;
         PP.start_group f 0;
-        expression Expression f e;
+        (if !Config.php_output
+         then (
+           (* PHP only allows Throwable objects to be thrown *)
+           PP.string f "new CamlException(";
+           expression Expression f e;
+           PP.string f ")")
+         else expression Expression f e);
         last_semi ();
         PP.end_group f;
         PP.end_group f
@@ -1774,6 +2381,7 @@ struct
             | None -> PP.string f "catch"
             | Some i ->
                 PP.string f "catch(";
+                if !Config.php_output then PP.string f "Throwable ";
                 formal_parameter f i;
                 PP.string f ")");
             block f b);
@@ -2007,22 +2615,77 @@ struct
   and function_declaration : type a.
       'pp -> string -> ('pp -> a -> unit) -> a option -> _ -> _ -> _ -> unit =
    fun f prefix (pp_name : _ -> a -> unit) (name : a option) l body loc ->
+    let is_php = !Config.php_output in
+    let has_name = Option.is_some name in
+
+    (* Calculate free variables for PHP use clause *)
+    let free_vars : string list =
+      if is_php
+      then (
+        (* Collect uses from function body *)
+        let body_uses = collect_uses_in_statement_list [] body in
+        (* Collect defs from function body *)
+        let body_defs = collect_defs_in_statement_list [] body in
+        (* Get parameter names *)
+        let param_names = get_param_names l in
+        (* Free vars = Uses \ (Defs U Params U Globals) *)
+        let all_defs = List.concat [ body_defs; param_names ] in
+        let free_vars = List.filter body_uses ~f:(fun v ->
+            not (List.mem ~eq:String.equal v all_defs)
+            && not (String.equal v "globalThis")
+            && not (String.equal v "undefined")
+            && not (String.equal v "NaN")
+            && not (String.equal v "Infinity")
+            && not (StringLabels.starts_with ~prefix:"caml_" v)) in
+        free_vars
+      )
+      else []
+    in
+
     PP.start_group f 0;
     PP.start_group f 0;
     PP.start_group f 0;
-    PP.string f prefix;
-    (match name with
-    | None -> ()
-    | Some name ->
-        if not (String.is_empty prefix) then PP.space f;
-        pp_name f name);
+
+    if is_php && has_name
+    then (
+      (* PHP: $name = function instead of function name *)
+      PP.string f "$";
+      Option.iter name ~f:(fun n -> pp_name f n);
+      PP.string f " = ";
+      PP.string f prefix)
+    else (
+      PP.string f prefix;
+      match name with
+      | None -> ()
+      | Some name ->
+          if not (String.is_empty prefix) then PP.space f;
+          pp_name f name);
     PP.end_group f;
     PP.break f;
     PP.start_group f 1;
     PP.string f "(";
     formal_parameter_list f l;
     PP.string f ")";
-    PP.end_group f;
+
+    (* Add use clause for PHP (both named and anonymous functions) *)
+    if is_php && not (List.is_empty free_vars)
+    then (
+      PP.string f " use (";
+      let vars = List.sort_uniq ~cmp:String.compare free_vars in
+      let rec output_vars = function
+        | [] -> ()
+        | [ v ] ->
+            PP.string f "&$";
+            PP.string f (sanitize_php v)
+        | v :: rest ->
+            PP.string f "&$";
+            PP.string f (sanitize_php v);
+            PP.string f ", ";
+            output_vars rest
+      in
+      output_vars vars;
+      PP.string f ")");
+    
     PP.end_group f;
     PP.start_group f 1;
     PP.string f "{";
@@ -2032,6 +2695,10 @@ struct
     PP.break f;
     output_debug_info f loc;
     PP.string f "}";
+    
+    (* Add semicolon after function assignment in PHP mode *)
+    if is_php && has_name then PP.string f ";";
+    
     PP.end_group f
 
   and function_declaration' f (name : _ option) (k, l, b, loc') =
@@ -2042,7 +2709,7 @@ struct
       | { async = true; generator = true } -> "async function*"
       | { async = false; generator = true } -> "function*"
     in
-    function_declaration f prefix (ident ~kind:`Binding) name l b loc'
+    function_declaration f prefix (ident ~prefix:false ~kind:`Binding) name l b loc'
 
   and decorator f e =
     PP.start_group f 2;
@@ -2070,7 +2737,7 @@ struct
     | None -> ()
     | Some i ->
         PP.space f;
-        ident f ~kind:`Binding i);
+        ident ~prefix:false f ~kind:`Binding i);
     PP.end_group f;
     Option.iter x.extends ~f:(fun e ->
         PP.space f;

@@ -310,7 +310,7 @@ let gen_missing js missing =
                             (call
                                (EVar (ident_s "caml_failwith"))
                                [ EBin
-                                   ( Plus
+                                   ( Dot
                                    , EStr prim
                                    , EStr (Utf8_string.of_string_exn " not implemented")
                                    )
@@ -359,17 +359,17 @@ let link' ~export_runtime ~standalone ~link (js : Javascript.statement_list) :
         :: js
       else js
     in
+    let free =
+      lazy
+        (let free = ref StringSet.empty in
+         let o =
+           new Js_traverse.fast_freevar (fun s -> free := StringSet.add s !free)
+         in
+         o#program js;
+         !free)
+    in
     let used =
       let all_provided = Linker.list_all () in
-      let free =
-        lazy
-          (let free = ref StringSet.empty in
-           let o =
-             new Js_traverse.fast_freevar (fun s -> free := StringSet.add s !free)
-           in
-           o#program js;
-           !free)
-      in
       match link with
       | `All ->
           let prim = Primitive.get_external () in
@@ -391,6 +391,46 @@ let link' ~export_runtime ~standalone ~link (js : Javascript.statement_list) :
     in
     let linkinfos, js =
       let linkinfos, missing = Linker.resolve_deps ~check_missing linkinfos used in
+      let missing =
+        if !Config.php_output
+        then
+          List.fold_left
+            [ "caml_register_global"
+            ; "caml_fs_init"
+            ; "caml_wrap_exception"
+            ; "caml_set_arity"
+            ; "caml_get_arity"
+            ; "caml_call_gen"
+            ; "caml_check_bound"
+            ; "caml_maybe_attach_backtrace"
+            ; "caml_typeof"
+            ; "caml_js_length"
+            ; "caml_seq"
+            ; "caml_int_compare"
+            ; "caml_bytes_of_string"
+            ; "caml_bytes_set"
+            ; "caml_create_bytes"
+            ; "caml_ml_bytes_length"
+            ; "caml_blit_bytes"
+            ; "caml_obj_tag"
+            ; "caml_obj_block"
+            ; "caml_set_oo_id"
+            ; "caml_atomic_fetch_add_field"
+            ; "caml_lazy_reset_to_lazy"
+            ; "caml_lazy_update_to_forcing"
+            ; "caml_lazy_update_to_forward"
+            ; "caml_alloc_dummy_lazy"
+            ; "caml_update_dummy_lazy"
+            ; "caml_array_make"
+            ; "caml_array_blit"
+            ; "caml_string_compare"
+            ; "caml_string_get"
+            ; "caml_oo_cache_id"
+            ]
+            ~init:missing
+            ~f:(fun acc nm -> StringSet.add nm acc)
+        else missing
+      in
       (* gen_missing may use caml_failwith *)
       if (not (StringSet.is_empty missing)) && Config.Flag.genprim ()
       then
@@ -594,7 +634,7 @@ let pack ~wrap_with_fun ~standalone { Linker.runtime_code = js; always_required_
       let js = export_shim js in
       let js = old_global_object_shim js in
       let js =
-        if use_strict
+        if use_strict && not !Config.php_output
         then expr (J.EStr (Utf8_string.of_string_exn "use strict")) :: js
         else js
       in
@@ -606,7 +646,22 @@ let pack ~wrap_with_fun ~standalone { Linker.runtime_code = js; always_required_
         let name = Utf8_string.of_string_exn name in
         mk (sfun (J.ident name))
     | `Iife ->
-        expr (J.call (mk efun) [ J.EVar (J.ident Global_constant.global_object_) ] J.N)
+        if !Config.php_output
+        then
+          let name = Utf8_string.of_string_exn "_jsoo_main" in
+          let func = sfun (J.ident name) in
+          let func_stmts, func_loc = mk func in
+          let call_stmt =
+            expr
+              (J.ECall
+                 (J.EVar (J.ident name), J.ANormal, [J.Arg (J.EVar (J.ident (Utf8_string.of_string_exn "GLOBALS")))], J.N))
+          in
+          (* For PHP, return function and call as separate statements, not wrapped in a Block *)
+          (match func_stmts with
+          | J.Block stmts -> J.Block (stmts @ [ call_stmt ]), func_loc
+          | stmt -> J.Block [ stmt, func_loc; call_stmt ], func_loc)
+        else
+          expr (J.ECall (mk efun, J.ANormal, [J.Arg (J.EVar (J.ident Global_constant.global_object_))], J.N))
   in
   let always_required_js =
     (* consider adding a comments in the generated file with original
@@ -621,7 +676,18 @@ let pack ~wrap_with_fun ~standalone { Linker.runtime_code = js; always_required_
         wrap_in_iife ~use_strict:false program)
   in
   let runtime_js = wrap_in_iife ~use_strict:(Config.Flag.strictmode ()) js in
-  let js = always_required_js @ [ runtime_js ] in
+  (* For PHP, unwrap the Block to avoid extra braces at top-level *)
+  let js =
+    if !Config.php_output
+    then
+      let runtime_stmts =
+        match runtime_js with
+        | J.Block stmts, _loc -> stmts
+        | stmt, loc -> [stmt, loc]
+      in
+      always_required_js @ runtime_stmts
+    else always_required_js @ [ runtime_js ]
+  in
   let js =
     match wrap_with_fun, standalone with
     | `Named name, (true | false) ->
@@ -642,6 +708,8 @@ if (typeof module === 'object' && module.exports) {
         js @ export_node
     | `Anonymous, _ -> js
     | `Iife, false -> js
+    | `Iife, true when !Config.php_output ->
+        js
     | `Iife, true ->
         let e =
           let s =

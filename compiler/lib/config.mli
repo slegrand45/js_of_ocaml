@@ -119,6 +119,9 @@ val target : unit -> [ `JavaScript | `Wasm ]
 
 val set_target : [ `JavaScript | `Wasm ] -> unit
 
+(** PHP output mode *)
+val php_output : bool ref
+
 type effects_backend =
   [ `Disabled
   | `Cps
