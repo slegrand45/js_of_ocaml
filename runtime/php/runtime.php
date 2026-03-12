@@ -161,7 +161,8 @@ _jsoo_set_global('caml_set_oo_id', function($b) {
 
 _jsoo_set_global('caml_wrap_exception', function($e) {
     if ($e instanceof CamlException) return $e->caml_val;
-    return new CamlBlock([0, 0, $e]);
+    if ($e instanceof Throwable) return new CamlBlock([0, 0, $e->getMessage()]);
+    return $e;
 });
 
 _jsoo_set_global('caml_failwith', function($s) {
@@ -169,7 +170,7 @@ _jsoo_set_global('caml_failwith', function($s) {
 });
 
 _jsoo_set_global('caml_ml_string_length', function($s) {
-    return strlen($s);
+    return is_string($s) ? strlen($s) : 0;
 });
 
 _jsoo_set_global('caml_int_compare', function($a, $b) {
@@ -188,7 +189,7 @@ _jsoo_set_global('caml_string_get', function($s, $i) {
     return ord($s[$i]);
 });
 
-// Sys primitives (as functions)
+// Sys primitives
 _jsoo_set_global('caml_sys_io_buffer_size', function() { return 4096; });
 _jsoo_set_global('caml_sys_get_config', function() { return new CamlBlock([0, "ocaml", 8, "unix"]); });
 _jsoo_set_global('caml_sys_executable_name', function() { return "php"; });
@@ -198,7 +199,10 @@ _jsoo_set_global('caml_sys_const_ostype_cygwin', function() { return 0; });
 _jsoo_set_global('caml_sys_const_max_wosize', function() { return 0x7FFFFFFF; });
 
 // Bytes primitives
-_jsoo_set_global('caml_create_bytes', function($len) { return str_repeat("\0", $len); });
+_jsoo_set_global('caml_create_bytes', function($len) {
+    $len = max(0, (int)$len);
+    return str_repeat("\0", $len);
+});
 _jsoo_set_global('caml_bytes_set', function(&$b, $i, $c) {
     $b[$i] = chr($c);
 });
@@ -211,16 +215,28 @@ _jsoo_set_global('caml_blit_bytes', function($s, $si, &$d, $di, $len) {
 // Objects & Lazy primitives
 _jsoo_set_global('caml_obj_tag', function($x) {
     if ($x instanceof CamlBlock) return $x->fields[0];
-    if (is_array($x)) return $x[0];
-    return 1000; // Tag for non-blocks
+    if (is_array($x)) return isset($x[0]) ? $x[0] : 1000;
+    return 1000;
 });
 _jsoo_set_global('caml_obj_block', function($tag, $len) {
     return new CamlBlock(array_merge([$tag], array_fill(0, $len, 0)));
 });
+_jsoo_set_global('caml_obj_dup', function($x) {
+    if ($x instanceof CamlBlock) return new CamlBlock($x->fields);
+    return $x;
+});
+
 _jsoo_set_global('caml_atomic_fetch_add_field', function($obj, $i, $v) {
     $old = $obj[$i];
     $obj[$i] += $v;
     return $old;
+});
+_jsoo_set_global('caml_atomic_cas_field', function($obj, $i, $old, $v) {
+    if ($obj[$i] === $old) {
+        $obj[$i] = $v;
+        return 1;
+    }
+    return 0;
 });
 
 $GLOBALS['caml_method_cache'] = [];
@@ -274,6 +290,168 @@ _jsoo_set_global('caml_trampoline_return', function($f, $args, $direct) {
     return $res;
 });
 
+// CPS & Effects primitives
+$GLOBALS['caml_current_stack'] = (object)['k' => 0, 'x' => 0, 'h' => 0, 'e' => 0];
+$GLOBALS['caml_stack_depth'] = 40;
+
+function caml_stack_check_depth() {
+    return --$GLOBALS['caml_stack_depth'] > 0;
+}
+_jsoo_set_global('caml_stack_check_depth', 'caml_stack_check_depth');
+
+function caml_push_trap($handler) {
+    $GLOBALS['caml_current_stack']->x = (object)['h' => $handler, 't' => $GLOBALS['caml_current_stack']->x];
+}
+_jsoo_set_global('caml_push_trap', 'caml_push_trap');
+
+function caml_pop_trap() {
+    if (!$GLOBALS['caml_current_stack']->x) {
+        return function ($x) { throw $x; };
+    }
+    $h = $GLOBALS['caml_current_stack']->x->h;
+    $GLOBALS['caml_current_stack']->x = $GLOBALS['caml_current_stack']->x->t;
+    return $h;
+}
+_jsoo_set_global('caml_pop_trap', 'caml_pop_trap');
+
+$GLOBALS['caml_named_values'] = [];
+_jsoo_set_global('caml_register_named_value', function($name, $v) {
+    $GLOBALS['caml_named_values'][$name] = $v;
+});
+
+function caml_make_unhandled_effect_exn($eff) {
+    $name = "Effect.Unhandled";
+    $exn = isset($GLOBALS['caml_named_values'][$name]) ? $GLOBALS['caml_named_values'][$name] : null;
+    if ($exn) return new CamlBlock([0, $exn, $eff]);
+    return new CamlBlock([248, $name, caml_fresh_oo_id(0)]);
+}
+
+function caml_pop_fiber() {
+    $c = $GLOBALS['caml_current_stack']->e;
+    $GLOBALS['caml_current_stack']->e = 0;
+    $GLOBALS['caml_current_stack'] = $c;
+    return $c->k;
+}
+
+_jsoo_set_global('caml_perform_effect', function($eff, $k0) {
+    if ($GLOBALS['caml_current_stack']->e === 0) {
+        throw new CamlException(caml_make_unhandled_effect_exn($eff));
+    }
+    $handler = $GLOBALS['caml_current_stack']->h[3];
+    $last_fiber = $GLOBALS['caml_current_stack'];
+    $last_fiber->k = $k0;
+    $cont = new CamlBlock([245, $last_fiber, $last_fiber]);
+    $k1 = caml_pop_fiber();
+    return caml_cps_call($handler, $eff, $cont, $last_fiber, $k1);
+});
+
+_jsoo_set_global('caml_reperform_effect', function($eff, $cont, $last, $k0) {
+    if ($GLOBALS['caml_current_stack']->e === 0) {
+        $exn = caml_make_unhandled_effect_exn($eff);
+        $stack = caml_continuation_use_noexc($cont);
+        caml_resume_stack($stack, $last, $k0);
+        throw new CamlException($exn);
+    }
+    $handler = $GLOBALS['caml_current_stack']->h[3];
+    $last_fiber = $GLOBALS['caml_current_stack'];
+    $last_fiber->k = $k0;
+    $last->e = $last_fiber;
+    $cont[2] = $last_fiber;
+    $k1 = caml_pop_fiber();
+    return caml_cps_call($handler, $eff, $cont, $last_fiber, $k1);
+});
+
+function caml_resume_stack($stack, $last, $k) {
+    if (!$stack) {
+         $name = "Effect.Continuation_already_resumed";
+         $exn = isset($GLOBALS['caml_named_values'][$name]) ? $GLOBALS['caml_named_values'][$name] : null;
+         if (!$exn) $exn = new CamlBlock([248, $name, caml_fresh_oo_id(0)]);
+         throw new CamlException($exn);
+    }
+    if ($last === 0) {
+        $last = $stack;
+        while ($last->e !== 0) $last = $last->e;
+    }
+    $GLOBALS['caml_current_stack']->k = $k;
+    $last->e = $GLOBALS['caml_current_stack'];
+    $GLOBALS['caml_current_stack'] = $stack;
+    return $stack->k;
+}
+_jsoo_set_global('caml_resume_stack', 'caml_resume_stack');
+
+_jsoo_set_global('caml_alloc_stack', function($hv, $hx, $hf) {
+    $handlers = [0, $hv, $hx, $hf];
+    return (object)[
+        'k' => function($x) use ($handlers) {
+            return caml_cps_call($handlers[1], $x, caml_pop_fiber());
+        },
+        'x' => (object)['h' => function($e) use ($handlers) {
+            return caml_cps_call($handlers[2], $e, caml_pop_fiber());
+        }, 't' => 0],
+        'h' => $handlers,
+        'e' => 0
+    ];
+});
+
+function caml_continuation_use_noexc($cont) {
+    $stack = $cont[1];
+    $cont[1] = 0;
+    return $stack;
+}
+_jsoo_set_global('caml_continuation_use_noexc', 'caml_continuation_use_noexc');
+
+_jsoo_set_global('caml_cps_trampoline', function($f, $args) {
+    $saved_stack_depth = $GLOBALS['caml_stack_depth'];
+    $saved_current_stack = $GLOBALS['caml_current_stack'];
+    try {
+        $GLOBALS['caml_current_stack'] = (object)['k' => 0, 'x' => 0, 'h' => 0, 'e' => 0];
+        if ($args instanceof CamlBlock) $args = $args->fields;
+        $args[] = function ($x) { return $x; };
+        $res = (object)['joo_tramp' => $f, 'joo_args' => $args, 'joo_direct' => 0];
+        do {
+            $GLOBALS['caml_stack_depth'] = 40;
+            try {
+                $res = (isset($res->joo_direct) && $res->joo_direct)
+                    ? ($res->joo_tramp)(...$res->joo_args)
+                    : caml_call_gen($res->joo_tramp, $res->joo_args);
+            } catch (Throwable $e) {
+                if (!$GLOBALS['caml_current_stack']->x) throw $e;
+                $handler = $GLOBALS['caml_current_stack']->x->h;
+                $GLOBALS['caml_current_stack']->x = $GLOBALS['caml_current_stack']->x->t;
+                $res = (object)['joo_tramp' => $handler, 'joo_args' => [caml_wrap_exception($e)], 'joo_direct' => 1];
+            }
+        } while ($res instanceof stdClass && isset($res->joo_args));
+    } finally {
+        $GLOBALS['caml_stack_depth'] = $saved_stack_depth;
+        $GLOBALS['caml_current_stack'] = $saved_current_stack;
+    }
+    return $res;
+});
+
+function caml_cps_call($f, ...$args) {
+    if (caml_stack_check_depth()) {
+        return caml_call_gen($f, $args);
+    } else {
+        return caml_trampoline_return($f, $args, 0);
+    }
+}
+_jsoo_set_global('caml_exact_trampoline_cps_call', 'caml_cps_call');
+_jsoo_set_global('caml_exact_trampoline_cps_call_0', 'caml_cps_call');
+_jsoo_set_global('caml_exact_trampoline_cps_call_1', 'caml_cps_call');
+_jsoo_set_global('caml_exact_trampoline_cps_call_2', 'caml_cps_call');
+_jsoo_set_global('caml_exact_trampoline_cps_call_3', 'caml_cps_call');
+_jsoo_set_global('caml_trampoline_cps_call1', 'caml_cps_call');
+_jsoo_set_global('caml_trampoline_cps_call2', 'caml_cps_call');
+_jsoo_set_global('caml_trampoline_cps_call3', 'caml_cps_call');
+_jsoo_set_global('caml_trampoline_cps_call4', 'caml_cps_call');
+_jsoo_set_global('caml_trampoline_cps_call5', 'caml_cps_call');
+_jsoo_set_global('caml_trampoline_cps_call6', 'caml_cps_call');
+
+_jsoo_set_global('caml_int32_format', function($fmt, $x) { return sprintf($fmt, $x); });
+_jsoo_set_global('caml_nativeint_format', function($fmt, $x) { return sprintf($fmt, $x); });
+_jsoo_set_global('caml_int64_format', function($fmt, $x) { return sprintf($fmt, $x); });
+
+// Lazy primitives
 _jsoo_set_global('caml_lazy_reset_to_lazy', function($lazy, $f = null) {
     $lazy[0] = 246; // Forcing
     if (func_num_args() > 1) $lazy[1] = $f;
@@ -295,7 +473,6 @@ _jsoo_set_global('caml_update_dummy_lazy', function($lazy, $v = null) {
     $lazy[1] = $v[1];
     return 0;
 });
-
 _jsoo_set_global('caml_update_dummy', function($dummy, $v) {
     $dummy->fields = $v->fields;
     return 0;
@@ -338,13 +515,10 @@ _jsoo_set_global('caml_compare', 'caml_compare');
 
 _jsoo_set_global('caml_array_concat', function($l) {
     $res = [0];
-    // $l is an OCaml list of arrays
     while ($l instanceof CamlBlock && $l->fields[0] === 0) {
         $arr = $l->fields[1];
         if ($arr instanceof CamlBlock) {
-            for ($i = 1; $i < count($arr->fields); $i++) {
-                $res[] = $arr->fields[$i];
-            }
+            for ($i = 1; $i < count($arr->fields); $i++) $res[] = $arr->fields[$i];
         }
         $l = $l->fields[2];
     }
@@ -364,10 +538,9 @@ _jsoo_set_global('caml_string_compare', function($a, $b) {
     return strcmp($a, $b);
 });
 
-// Bitwise shift right unsigned (JS >>> operator)
+// Bitwise shift right unsigned
 function caml_shift_right_unsigned($a, $b) {
-    $a = (int)$a;
-    $b = (int)$b;
+    $a = (int)$a; $b = (int)$b;
     if ($b >= 32) return 0;
     return ($a & 0xFFFFFFFF) >> $b;
 }
@@ -378,39 +551,29 @@ function caml_int32($x) {
 }
 _jsoo_set_global('caml_int32', 'caml_int32');
 
-_jsoo_set_global('caml_call_gen', function($f, $args) {
+function caml_call_gen($f, $args) {
     if ($args instanceof CamlBlock) $args = $args->fields;
+    if (is_array($args)) $args = array_values($args);
+    else return $f($args);
+    
     $n = count($args);
     if ($n === 0) return $f;
     $arity = caml_get_arity($f);
-    if ($arity <= 0) {
-        return $f(...$args);
-    }
-    if ($arity === $n) {
-        return $f(...$args);
-    }
+    if ($arity <= 0) return $f(...$args);
+    if ($arity === $n) return $f(...$args);
     if ($arity < $n) {
         $res = $f(...array_slice($args, 0, $arity));
-        return $GLOBALS['caml_call_gen']($res, array_slice($args, $arity));
+        return caml_call_gen($res, array_slice($args, $arity));
     }
-    // Application partielle
     return function(...$extra_args) use ($f, $args) {
-        return $GLOBALS['caml_call_gen']($f, array_merge($args, $extra_args));
+        return caml_call_gen($f, array_merge($args, $extra_args));
     };
-});
+}
+_jsoo_set_global('caml_call_gen', 'caml_call_gen');
+_jsoo_set_global('caml_call_gen_cps', 'caml_call_gen');
 
-_jsoo_set_global('caml_call1', function($f, $a0) {
-    return $GLOBALS['caml_call_gen']($f, [$a0]);
-});
-_jsoo_set_global('caml_call2', function($f, $a0, $a1) {
-    return $GLOBALS['caml_call_gen']($f, [$a0, $a1]);
-});
-_jsoo_set_global('caml_call3', function($f, $a0, $a1, $a2) {
-    return $GLOBALS['caml_call_gen']($f, [$a0, $a1, $a2]);
-});
-_jsoo_set_global('caml_call4', function($f, $a0, $a1, $a2, $a3) {
-    return $GLOBALS['caml_call_gen']($f, [$a0, $a1, $a2, $a3]);
-});
-_jsoo_set_global('caml_call5', function($f, $a0, $a1, $a2, $a3, $a4) {
-    return $GLOBALS['caml_call_gen']($f, [$a0, $a1, $a2, $a3, $a4]);
-});
+_jsoo_set_global('caml_call1', function($f, ...$args) { return caml_call_gen($f, $args); });
+_jsoo_set_global('caml_call2', function($f, ...$args) { return caml_call_gen($f, $args); });
+_jsoo_set_global('caml_call3', function($f, ...$args) { return caml_call_gen($f, $args); });
+_jsoo_set_global('caml_call4', function($f, ...$args) { return caml_call_gen($f, $args); });
+_jsoo_set_global('caml_call5', function($f, ...$args) { return caml_call_gen($f, $args); });

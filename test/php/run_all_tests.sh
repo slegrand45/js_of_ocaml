@@ -42,7 +42,11 @@ for f in *.ml; do
     
     # 2. Sortie PHP (Génération via ocamlephan)
     # Le compilateur injecte maintenant <?php en tête de fichier
-    "$JSOO" --php --pretty --noruntime "tmp_out/${test_name}.byte" -o "tmp_out/${test_name}.php" 2>/dev/null
+    extra_args=""
+    if [ "$test_name" == "effects" ]; then
+        extra_args="--effects=cps"
+    fi
+    "$JSOO" --php --pretty --noruntime $extra_args "tmp_out/${test_name}.byte" -o "tmp_out/${test_name}.php" 2>/dev/null
 
     # On ajoute simplement le require_once pour le runtime (sans <?php car déjà présent)
     echo "<?php require_once('./runtime.php');" > "tmp_out/final_${test_name}.php"
