@@ -2,4 +2,4 @@
 exception MyExn
 let test_exn () =
   try raise MyExn with MyExn -> 42
-let () = ignore (test_exn ())
+let () = print_int (test_exn ()); print_newline ()

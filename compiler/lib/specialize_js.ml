@@ -29,6 +29,7 @@ let stats = Debug.find "stats"
 let debug_stats = Debug.find "stats-debug"
 
 let specialize_instr opt_count ~target info i =
+  let target = if Config.Flag.php_output () then `JavaScript else target in
   match i, target with
   | Let (x, Prim (Extern "caml_format_int", [ y; z ])), `JavaScript -> (
       (* We can implement the special case where the format string is "%s" in JavaScript

@@ -1,3 +1,3 @@
 (* Native test *)
 let test_native () = 42
-let () = ignore (test_native ())
+let () = print_int (test_native ()); print_newline ()

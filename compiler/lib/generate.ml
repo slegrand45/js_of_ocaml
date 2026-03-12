@@ -1093,10 +1093,10 @@ let apply_fun_raw =
       in
       (* We skip the arity check when we know that we have the right
          number of parameters, since this test is expensive. *)
-      if exact && not !Config.php_output
+      if exact && not (Config.Flag.php_output ())
       then apply_directly real_closure params
       else
-        if !Config.php_output then
+        if Config.Flag.php_output () then
           J.call
             (runtime_fun
                ctx
@@ -1285,9 +1285,12 @@ let register_bin_math_prim name prim =
       J.call (J.dot (s_var "Math") prim) [ cx; cy ] loc)
 
 let _ =
-  register_un_prim_ctx "%caml_format_int_special" `Pure (fun ctx cx loc ->
+  register_bin_prim "%int_mul" `Pure (fun cx cy _loc -> J.EBin (J.Mul, cx, cy));
+  register_bin_prim "%int_add" `Pure (fun cx cy _loc -> J.EBin (J.Plus, cx, cy));
+  register_bin_prim "%int_sub" `Pure (fun cx cy _loc -> J.EBin (J.Minus, cx, cy));
+  register_un_prim_ctx "%caml_format_int_special" `Pure (fun ctx cx _loc ->
       let s = J.EBin (J.Dot, str_js_utf8 "", cx) in
-      ocaml_string ~ctx ~loc s);
+      ocaml_string ~ctx ~loc:_loc s);
   register_un_prim "%direct_obj_tag" `Pure (fun cx _loc -> Mlvalue.Block.tag cx);
   register_bin_prims
     [ "caml_array_unsafe_get"

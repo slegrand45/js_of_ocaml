@@ -135,6 +135,7 @@ _jsoo_set_global('caml_ml_open_descriptor_in', function($fd) { return $fd; });
 _jsoo_set_global('caml_ml_open_descriptor_out', function($fd) { return $fd; });
 
 _jsoo_set_global('caml_ml_output', function($fd, $s, $start, $len) {
+    if ($s instanceof CamlBlock) $s = $s->fields[1];
     echo substr($s, $start, $len);
 });
 
@@ -172,6 +173,18 @@ _jsoo_set_global('caml_ml_string_length', function($s) {
 
 _jsoo_set_global('caml_int_compare', function($a, $b) {
     return $a <=> $b;
+});
+
+_jsoo_set_global('caml_format_float', function($fmt, $x) {
+    return sprintf($fmt, $x);
+});
+
+_jsoo_set_global('caml_bytes_get', function($s, $i) {
+    return ord($s[$i]);
+});
+
+_jsoo_set_global('caml_string_get', function($s, $i) {
+    return ord($s[$i]);
 });
 
 // Sys primitives (as functions)
@@ -245,22 +258,41 @@ _jsoo_set_global('caml_get_cached_method', function($obj, $tag, $cache_id) {
     return $meths[$li];
 });
 
-_jsoo_set_global('caml_lazy_reset_to_lazy', function($lazy, $f) {
+_jsoo_set_global('caml_trampoline', function($res) {
+    while ($res instanceof stdClass && isset($res->joo_tramp)) {
+        $res = ($res->joo_tramp)(...$res->joo_args);
+    }
+    return $res;
+});
+
+_jsoo_set_global('caml_trampoline_return', function($f, $args, $direct) {
+    $res = new stdClass();
+    $res->joo_tramp = $f;
+    $res->joo_args = $args;
+    $res->joo_direct = $direct;
+    return $res;
+});
+
+_jsoo_set_global('caml_lazy_reset_to_lazy', function($lazy, $f = null) {
     $lazy[0] = 246; // Forcing
-    $lazy[1] = $f;
+    if (func_num_args() > 1) $lazy[1] = $f;
+    return 0;
 });
-_jsoo_set_global('caml_lazy_update_to_forcing', function($lazy, $f) {
+_jsoo_set_global('caml_lazy_update_to_forcing', function($lazy, $f = null) {
     $lazy[0] = 246;
-    $lazy[1] = $f;
+    if (func_num_args() > 1) $lazy[1] = $f;
+    return 0;
 });
-_jsoo_set_global('caml_lazy_update_to_forward', function($lazy, $v) {
+_jsoo_set_global('caml_lazy_update_to_forward', function($lazy, $v = null) {
     $lazy[0] = 250; // Forward
-    $lazy[1] = $v;
+    if (func_num_args() > 1) $lazy[1] = $v;
+    return 0;
 });
-_jsoo_set_global('caml_alloc_dummy_lazy', function() { return new CamlBlock([246, 0]); });
-_jsoo_set_global('caml_update_dummy_lazy', function($lazy, $v) {
+_jsoo_set_global('caml_alloc_dummy_lazy', function() { return new CamlBlock([246, function() { return 0; }]); });
+_jsoo_set_global('caml_update_dummy_lazy', function($lazy, $v = null) {
     $lazy[0] = $v[0];
     $lazy[1] = $v[1];
+    return 0;
 });
 
 // Array primitives
@@ -274,9 +306,6 @@ _jsoo_set_global('caml_array_blit', function($s, $si, $d, $di, $len) {
 // String primitives
 _jsoo_set_global('caml_string_compare', function($a, $b) {
     return strcmp($a, $b);
-});
-_jsoo_set_global('caml_string_get', function($s, $i) {
-    return ord($s[$i]);
 });
 
 // Bitwise shift right unsigned (JS >>> operator)

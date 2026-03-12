@@ -2,4 +2,4 @@
 let test_labels () =
   let f ~x ~y = x + y in
   f ~x:1 ~y:2
-let () = ignore (test_labels ())
+let () = print_int (test_labels ()); print_newline ()

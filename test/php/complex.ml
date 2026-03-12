@@ -8,4 +8,8 @@ let process_list lst =
     | x :: xs -> x + List.length xs
   with _ -> raise ProcessError
 
-let helper x y = x + y
+let () =
+  print_int (process_list [1; 2; 3]);
+  print_newline ();
+  print_int (process_list []);
+  print_newline ()

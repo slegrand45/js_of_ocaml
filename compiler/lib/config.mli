@@ -78,6 +78,10 @@ module Flag : sig
 
   val load_shapes_auto : unit -> bool
 
+  val php_output : unit -> bool
+
+  val set_php_output : bool -> unit
+
   val enable : string -> unit
 
   val disable : string -> unit
@@ -118,9 +122,6 @@ end
 val target : unit -> [ `JavaScript | `Wasm ]
 
 val set_target : [ `JavaScript | `Wasm ] -> unit
-
-(** PHP output mode *)
-val php_output : bool ref
 
 type effects_backend =
   [ `Disabled

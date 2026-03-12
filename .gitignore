@@ -56,3 +56,11 @@ toplevel/examples/lwt_toplevel_bin/toplevel.js
 toplevel/examples/lwt_toplevel_bin/eval.js
 
 janestreet
+
+# ocamlephan
+test/php/*.php
+test/php/*.tmp
+test/php/*.js
+test/php/tmp_out/*.php
+test/php/tmp_out/*.out
+test/php/tmp_out/*.byte

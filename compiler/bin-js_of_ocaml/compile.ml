@@ -34,7 +34,7 @@ let header formatter ~custom_header =
   | Some c -> Pretty_print.string formatter (c ^ "\n")
 
 let jsoo_header formatter build_info =
-  if !Config.php_output then Pretty_print.string formatter "<?php\n";
+  if Config.Flag.php_output () then Pretty_print.string formatter "<?php\n";
   Pretty_print.string formatter (Printf.sprintf "%s\n" Global_constant.header);
   Pretty_print.string formatter (Build_info.to_string build_info)
 
@@ -166,7 +166,7 @@ let run
   let include_cmis = toplevel && not no_cmis in
   let custom_header = common.Jsoo_cmdline.Arg.custom_header in
   Config.set_target `JavaScript;
-  Config.php_output := php;
+  Config.Flag.set_php_output php;
   Jsoo_cmdline.Arg.eval common;
   Config.set_effects_backend effects;
   Linker.reset ();

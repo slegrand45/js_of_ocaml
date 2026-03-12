@@ -17,6 +17,6 @@ let test_complex_refs () =
   List.length !l_ref
 
 let () =
-  ignore (test_simple_ref ());
-  ignore (test_multiple_refs ());
-  ignore (test_complex_refs ())
+  print_int (test_simple_ref ()); print_newline ();
+  print_int (test_multiple_refs ()); print_newline ();
+  print_int (test_complex_refs ()); print_newline ()

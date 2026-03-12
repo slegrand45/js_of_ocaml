@@ -5,4 +5,7 @@ let test_arrays () =
   a.(1) <- 10;
   x + a.(1)
 
-let () = ignore (test_arrays ())
+let () = 
+  let res = test_arrays () in
+  print_int res;
+  print_newline ()

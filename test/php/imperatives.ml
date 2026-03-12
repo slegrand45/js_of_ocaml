@@ -3,4 +3,4 @@ let test_imp () =
   let r = ref 0 in
   r := !r + 1;
   !r
-let () = ignore (test_imp ())
+let () = print_int (test_imp ()); print_newline ()

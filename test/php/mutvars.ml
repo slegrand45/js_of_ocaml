@@ -3,4 +3,4 @@ let test_mutvar () =
   let x = ref 0 in
   x := 1;
   !x
-let () = ignore (test_mutvar ())
+let () = print_int (test_mutvar ()); print_newline ()

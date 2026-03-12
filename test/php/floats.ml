@@ -7,4 +7,4 @@ let test_floats () =
   let _ = x *. y in
   let _ = x /. y in
   x
-let () = ignore (test_floats ())
+let () = print_float (test_floats ()); print_newline ()

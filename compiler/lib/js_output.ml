@@ -159,9 +159,6 @@ struct
 
   let last_mapping_has_a_name = ref false
 
-  (* Stack of labels that correspond to transformed blocks (for PHP) *)
-  let block_label_stack = ref []
-
   let output_debug_info f loc =
     let loc =
       (* We force a new mapping after an identifier, to avoid its name
@@ -207,8 +204,16 @@ struct
   let sanitize_php v =
     StringLabels.map ~f:(fun c -> if Char.equal c '$' then '_' else c) v
 
+    let php_label_counter = ref 0
+  let unique_php_label l = incr php_label_counter; l ^ "_" ^ string_of_int !php_label_counter
+  let php_label_map = ref []
+  let get_php_label l prefix =
+    match List.find_map ~f:(fun ((l', p'), res) -> if String.equal l l' && String.equal prefix p' then Some res else None) !php_label_map with
+    | Some unique_l -> unique_l
+    | None -> let unique_l = unique_php_label (prefix ^ "_" ^ l) in php_label_map := ((l, prefix), unique_l) :: !php_label_map; unique_l
+
   let identName f x =
-    let x = if !Config.php_output then sanitize_php x else x in
+    let x = if Config.Flag.php_output () then sanitize_php x else x in
     match Js_token.is_reserved x with
     | None -> PP.string f x
     | Some _ ->
@@ -220,19 +225,19 @@ struct
     let n = match ident with
       | S { name = Utf8 n; var; _ } ->
           (match var with
-          | Some v when !Config.php_output && not (StringLabels.starts_with ~prefix:"caml_" n) ->
+          | Some v when Config.Flag.php_output () && not (StringLabels.starts_with ~prefix:"caml_" n) ->
               n ^ "_" ^ string_of_int (Code.Var.idx v)
           | _ -> n)
       | V v -> "v" ^ string_of_int (Code.Var.idx v)
     in
-    if !Config.php_output then sanitize_php n else n
+    if Config.Flag.php_output () then sanitize_php n else n
 
   let ident ?(prefix = true) f ~kind ident =
     match ident with
     | S _ ->
         let n_str = name_of_ident ident in
         let is_param = match kind with `Binding -> true | _ -> false in
-        if !Config.php_output && prefix &&
+        if Config.Flag.php_output () && prefix &&
            (is_param
            || not (String.equal n_str "undefined"))
         then
@@ -245,12 +250,12 @@ struct
             in
             PP.string f ("$" ^ sanitized)
           )
-        else if !Config.php_output && String.equal n_str "undefined" then PP.string f "null"
+        else if Config.Flag.php_output () && String.equal n_str "undefined" then PP.string f "null"
         else PP.string f n_str
     | V _ ->
         assert accept_unnamed_var;
         let n_str = name_of_ident ident in
-        if !Config.php_output && prefix
+        if Config.Flag.php_output () && prefix
         then PP.string f ("$" ^ n_str)
         else PP.string f ("<" ^ n_str ^ ">")
 
@@ -372,7 +377,7 @@ struct
     | Lsr -> ">>>"
     | Asr -> ">>"
     | Plus -> "+"
-    | Dot -> if !Config.php_output then "." else "+"
+    | Dot -> if Config.Flag.php_output () then "." else "+"
     | Minus -> "-"
     | Mul -> "*"
     | Div -> "/"
@@ -628,7 +633,7 @@ struct
     match e with
     | EVar v -> ident f ~kind:`Reference v
     | ESeq (e1, e2) ->
-        if !Config.php_output
+        if Config.Flag.php_output ()
         then (
           (* In PHP, sequences need to use caml_seq helper since PHP doesn't have comma operator *)
           if Prec.(l > Expression)
@@ -664,9 +669,11 @@ struct
         then (
           PP.start_group f 1;
           PP.string f "(");
-        if !Config.php_output
+        if Config.Flag.php_output ()
         then (
           (* PHP does not support arrow functions with =>, use anonymous functions instead *)
+          let old_php_label_map = !php_label_map in
+          php_label_map := [];
           PP.start_group f 1;
           PP.start_group f 0;
           (match k with
@@ -736,6 +743,7 @@ struct
               function_body f b;
               output_debug_info f pc;
               PP.string f "}");
+          php_label_map := old_php_label_map;
           PP.end_group f)
         else (
           (* JavaScript arrow function output *)
@@ -852,7 +860,7 @@ struct
           PP.start_group f 1;
           PP.string f "(");
         PP.start_group f 0;
-        if !Config.php_output
+        if Config.Flag.php_output ()
         then
           match op with
           | Typeof ->
@@ -944,7 +952,7 @@ struct
         expression lft f e1;
         PP.space f;
         (match op with
-        | InstanceOf when !Config.php_output ->
+        | InstanceOf when Config.Flag.php_output () ->
             (* In PHP, use instanceof with proper class name handling *)
             PP.string f "instanceof ";
             expression rght f e2
@@ -1008,7 +1016,7 @@ struct
         PP.start_group f 0;
         if Prec.(l > out) then PP.string f "(";
         expression lft f e1;
-        if !Config.php_output then
+        if Config.Flag.php_output () then
           begin
             PP.string f " = caml_shift_right_unsigned(";
             expression lft f e1;
@@ -1035,7 +1043,7 @@ struct
           | _ -> lft
         in
         (* Special handling for Lsr (>>>) in PHP mode *)
-        if !Config.php_output && Poly.equal op Lsr then
+        if Config.Flag.php_output () && Poly.equal op Lsr then
           begin
             PP.start_group f 0;
             if Prec.(l > out) then PP.string f "(";
@@ -1130,11 +1138,11 @@ struct
             PP.end_group f)
     | EArr el ->
         PP.start_group f 1;
-        if !Config.php_output then PP.string f "new CamlBlock(";
+        if Config.Flag.php_output () then PP.string f "new CamlBlock(";
         PP.string f "[";
         element_list f el;
         PP.string f "]";
-        if !Config.php_output then PP.string f ")";
+        if Config.Flag.php_output () then PP.string f ")";
         PP.end_group f
     | EAccess (e, access_kind, e') ->
         PP.start_group f 1;
@@ -1143,7 +1151,7 @@ struct
           | NewExpression | MemberExpression -> MemberExpression
           | _ -> CallOrMemberExpression
         in
-        if !Config.php_output then
+        if Config.Flag.php_output () then
           match e with
           | EVar (S { name = Utf8 "globalThis"; _ }) ->
               PP.string f "$GLOBALS[";
@@ -1171,7 +1179,7 @@ struct
           PP.end_group f);
         PP.end_group f
     | EDot (e, access_kind, Utf8 nm) ->
-        if !Config.php_output then
+        if Config.Flag.php_output () then
           if String.equal nm "length" then
             (* PHP doesn't support ->length on arrays, use caml_js_length helper *)
             (PP.string f "caml_js_length(";
@@ -1265,7 +1273,7 @@ struct
         PP.string f ":";
         PP.space f;
         PP.end_group f;
-        (if !Config.php_output
+        (if Config.Flag.php_output ()
          then (
            (* PHP 8+ requires parentheses around nested ternaries in else branch *)
            PP.string f "(";
@@ -1403,7 +1411,7 @@ struct
     match e with
     | ElementHole ->
         (* In PHP, array holes must be filled with null to avoid fatal errors *)
-        if !Config.php_output then PP.string f "null"
+        if Config.Flag.php_output () then PP.string f "null"
     | Element e ->
         PP.start_group f 0;
         expression AssignementExpression f e;
@@ -1901,24 +1909,24 @@ struct
     | [ d ] -> variable_declaration f ?in_ d
     | d :: r ->
         variable_declaration f ?in_ d;
-        if !Config.php_output then PP.string f ";" else PP.string f ",";
+        if Config.Flag.php_output () then PP.string f ";" else PP.string f ",";
         PP.space f;
         variable_declaration_list_aux f ?in_ r
 
   and variable_declaration_kind f kind =
     match kind with
     | Var ->
-        if not !Config.php_output
+        if not (Config.Flag.php_output ())
         then (
           PP.string f "var";
           PP.space f)
     | Let ->
-        if not !Config.php_output
+        if not (Config.Flag.php_output ())
         then (
           PP.string f "let";
           PP.space f)
     | Const ->
-        if not !Config.php_output
+        if not (Config.Flag.php_output ())
         then (
           PP.string f "const";
           PP.space f)
@@ -2001,7 +2009,7 @@ struct
     match s with
     | Block b -> block f b
     | Variable_statement (k, l) ->
-        if !Config.php_output && List.length l > 1
+        if Config.Flag.php_output () && List.length l > 1
         then (
           PP.start_group f 1;
           PP.string f "{";
@@ -2197,19 +2205,19 @@ struct
         PP.string f "continue";
         last_semi ()
     | Continue_statement (Some s) ->
-        PP.string f "continue ";
         let (Utf8 l) = name_of_label s in
-        identName f l;
+        if Config.Flag.php_output () then (PP.string f "goto "; identName f (get_php_label l "cont"))
+        else (PP.string f "continue "; identName f l);
         last_semi ()
     | Break_statement None ->
         PP.string f "break";
         last_semi ()
     | Break_statement (Some s) ->
         let (Utf8 l) = name_of_label s in
-        if !Config.php_output && List.mem ~eq:String.equal l !block_label_stack
+        if Config.Flag.php_output ()
         then (
-          (* Breaking from a transformed block - just use break without label *)
-          PP.string f "break";
+          PP.string f "goto ";
+          identName f (get_php_label l "break");
           last_semi ())
         else (
           PP.string f "break ";
@@ -2221,7 +2229,7 @@ struct
             PP.string f "return";
             output_debug_info f loc;
             last_semi ~ret:true ()
-        | Some (EFun (i, ({ async = false; generator = false }, l, b, pc))) when not !Config.php_output ->
+        | Some (EFun (i, ({ async = false; generator = false }, l, b, pc))) when not (Config.Flag.php_output ()) ->
             PP.start_group f 1;
             PP.start_group f 0;
             PP.start_group f 0;
@@ -2258,37 +2266,39 @@ struct
         )
     | Labelled_statement (i, s) ->
         let (Utf8 l) = name_of_label i in
-        if !Config.php_output
+        if Config.Flag.php_output ()
         then (
           (* PHP doesn't support labeled blocks, only labeled loops *)
+          let old_map = !php_label_map in
+          let cont_l = unique_php_label ("cont_" ^ l) in
+          let break_l = unique_php_label ("break_" ^ l) in
+          php_label_map := ((l, "cont"), cont_l) :: ((l, "break"), break_l) :: !php_label_map;
           match s with
-          | Block b, _loc ->
-              (* Transform label: { } to do { } while(false) *)
-              block_label_stack := l :: !block_label_stack;
-              PP.string f "do";
-              statement1 ~last f (Block b, _loc);
-              PP.break f;
-              PP.string f "while(false);";
-              block_label_stack := List.tl !block_label_stack
           | (While_statement (_, _)
             | For_statement (_, _, _, _)
             | ForIn_statement (_, _, _)
             | ForOf_statement (_, _, _)
             | ForAwaitOf_statement (_, _, _)
             | Do_while_statement (_, _)), _ ->
-              (* For loops, keep the label *)
-              identName f l;
+              (* For loops, keep the label at start for continue/goto *)
+              identName f cont_l;
               PP.string f ":";
               PP.space f;
-              statement ~last f s
-          | _ ->
-              (* For other statements (if, etc.), wrap in do-while(false) *)
-              block_label_stack := l :: !block_label_stack;
-              PP.string f "do";
-              statement1 ~last f s;
+              statement ~last f s;
               PP.break f;
-              PP.string f "while(false);";
-              block_label_stack := List.tl !block_label_stack)
+              identName f break_l;
+              PP.string f ": ;";
+              php_label_map := old_map
+          | _ ->
+              (* For other statements (if, blocks, etc.) *)
+              identName f cont_l;
+              PP.string f ":";
+              PP.space f;
+              statement ~last f s;
+              PP.break f;
+              identName f break_l;
+              PP.string f ": ;";
+              php_label_map := old_map)
         else (
           identName f l;
           PP.string f ":";
@@ -2357,7 +2367,7 @@ struct
         PP.string f "throw";
         PP.non_breaking_space f;
         PP.start_group f 0;
-        (if !Config.php_output
+        (if Config.Flag.php_output ()
          then (
            (* PHP only allows Throwable objects to be thrown *)
            PP.string f "new CamlException(";
@@ -2381,7 +2391,7 @@ struct
             | None -> PP.string f "catch"
             | Some i ->
                 PP.string f "catch(";
-                if !Config.php_output then PP.string f "Throwable ";
+                if Config.Flag.php_output () then PP.string f "Throwable ";
                 formal_parameter f i;
                 PP.string f ")");
             block f b);
@@ -2615,7 +2625,9 @@ struct
   and function_declaration : type a.
       'pp -> string -> ('pp -> a -> unit) -> a option -> _ -> _ -> _ -> unit =
    fun f prefix (pp_name : _ -> a -> unit) (name : a option) l body loc ->
-    let is_php = !Config.php_output in
+    let is_php = Config.Flag.php_output () in
+    let old_php_label_map = !php_label_map in
+    if is_php then php_label_map := [];
     let has_name = Option.is_some name in
 
     (* Calculate free variables for PHP use clause *)
@@ -2690,6 +2702,14 @@ struct
     PP.start_group f 1;
     PP.string f "{";
     PP.break f;
+    if Config.Flag.php_output () then (
+      let body_defs = collect_defs_in_statement_list [] body in
+      let param_names = get_param_names l in
+      let locals_to_init = List.filter (List.sort_uniq ~cmp:String.compare body_defs) ~f:(fun v ->
+          not (List.mem ~eq:String.equal v param_names)
+          && not (List.mem ~eq:String.equal v free_vars)
+          && not (StringLabels.starts_with ~prefix:"caml_" v)) in
+      List.iter locals_to_init ~f:(fun v -> PP.string f ("$" ^ sanitize_php v ^ " = null;"); PP.break f));
     function_body f body;
     PP.end_group f;
     PP.break f;
@@ -2699,6 +2719,7 @@ struct
     (* Add semicolon after function assignment in PHP mode *)
     if is_php && has_name then PP.string f ";";
     
+    if is_php then php_label_map := old_php_label_map;
     PP.end_group f
 
   and function_declaration' f (name : _ option) (k, l, b, loc') =

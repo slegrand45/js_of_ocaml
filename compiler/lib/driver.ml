@@ -392,7 +392,7 @@ let link' ~export_runtime ~standalone ~link (js : Javascript.statement_list) :
     let linkinfos, js =
       let linkinfos, missing = Linker.resolve_deps ~check_missing linkinfos used in
       let missing =
-        if !Config.php_output
+        if Config.Flag.php_output ()
         then
           List.fold_left
             [ "caml_register_global"
@@ -634,7 +634,7 @@ let pack ~wrap_with_fun ~standalone { Linker.runtime_code = js; always_required_
       let js = export_shim js in
       let js = old_global_object_shim js in
       let js =
-        if use_strict && not !Config.php_output
+        if use_strict && not (Config.Flag.php_output ())
         then expr (J.EStr (Utf8_string.of_string_exn "use strict")) :: js
         else js
       in
@@ -646,7 +646,7 @@ let pack ~wrap_with_fun ~standalone { Linker.runtime_code = js; always_required_
         let name = Utf8_string.of_string_exn name in
         mk (sfun (J.ident name))
     | `Iife ->
-        if !Config.php_output
+        if Config.Flag.php_output ()
         then
           let name = Utf8_string.of_string_exn "_jsoo_main" in
           let func = sfun (J.ident name) in
@@ -678,7 +678,7 @@ let pack ~wrap_with_fun ~standalone { Linker.runtime_code = js; always_required_
   let runtime_js = wrap_in_iife ~use_strict:(Config.Flag.strictmode ()) js in
   (* For PHP, unwrap the Block to avoid extra braces at top-level *)
   let js =
-    if !Config.php_output
+    if Config.Flag.php_output ()
     then
       let runtime_stmts =
         match runtime_js with
@@ -708,7 +708,7 @@ if (typeof module === 'object' && module.exports) {
         js @ export_node
     | `Anonymous, _ -> js
     | `Iife, false -> js
-    | `Iife, true when !Config.php_output ->
+    | `Iife, true when Config.Flag.php_output () ->
         js
     | `Iife, true ->
         let e =

@@ -2,4 +2,4 @@
 let test_sswitch s = match s with
   | "hello" -> 1
   | _ -> 0
-let () = ignore (test_sswitch "hello")
+let () = print_int (test_sswitch "hello"); print_newline ()

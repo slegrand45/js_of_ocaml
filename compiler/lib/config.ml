@@ -108,6 +108,10 @@ module Flag = struct
   let es6 = o ~name:"es6" ~default:false
 
   let load_shapes_auto = o ~name:"load-shapes-auto" ~default:false
+
+  let php_output = o ~name:"php" ~default:false
+
+  let set_php_output b = set "php" b
 end
 
 module Param = struct
@@ -226,8 +230,6 @@ let set_target (t : [ `JavaScript | `Wasm ]) =
   | `JavaScript -> Targetint.set_num_bits 32
   | `Wasm -> Targetint.set_num_bits 31);
   target_ := (t :> [ `JavaScript | `Wasm | `None ])
-
-let php_output = ref false
 
 type effects_backend =
   [ `Disabled
