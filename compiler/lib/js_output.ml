@@ -388,6 +388,11 @@ struct
     | Coalesce -> "??"
     | InstanceOf | In -> assert false
 
+  let is_bitwise_op op =
+    match op with
+    | Bor | Band | Bxor | Lsl | Asr -> true
+    | _ -> false
+
   let unop_str op =
     match op with
     | Not -> "!"
@@ -928,6 +933,14 @@ struct
         then (
           PP.string f ")";
           PP.end_group f)
+    | EUn (Bnot, e) when Config.Flag.php_output () ->
+        let p = UnaryExpression in
+        let need_parent = Prec.(l > p) in
+        if need_parent then (PP.start_group f 1; PP.string f "(");
+        PP.string f "caml_int32(~";
+        expression p f e;
+        PP.string f ")";
+        if need_parent then (PP.string f ")"; PP.end_group f)
     | EUn (op, e) ->
         let p = UnaryExpression in
         let need_parent = Prec.(l > p) in
@@ -1050,6 +1063,20 @@ struct
             PP.string f "caml_shift_right_unsigned(";
             expression lft f e1;
             PP.string f ", ";
+            expression rght f e2;
+            PP.string f ")";
+            if Prec.(l > out) then PP.string f ")";
+            PP.end_group f
+          end
+        else if Config.Flag.php_output () && is_bitwise_op op then
+          begin
+            PP.start_group f 0;
+            if Prec.(l > out) then PP.string f "(";
+            PP.string f "caml_int32(";
+            expression lft f e1;
+            PP.space f;
+            PP.string f (op_str op);
+            PP.space f;
             expression rght f e2;
             PP.string f ")";
             if Prec.(l > out) then PP.string f ")";

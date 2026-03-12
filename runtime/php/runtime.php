@@ -1,6 +1,7 @@
 <?php
 // Ocamlephan Minimal Bridge
 set_time_limit(10);
+error_reporting(E_ALL & ~E_WARNING & ~E_NOTICE & ~E_DEPRECATED);
 
 // Exception wrapper pour OCaml values
 class CamlException extends Exception {
@@ -295,6 +296,61 @@ _jsoo_set_global('caml_update_dummy_lazy', function($lazy, $v = null) {
     return 0;
 });
 
+_jsoo_set_global('caml_update_dummy', function($dummy, $v) {
+    $dummy->fields = $v->fields;
+    return 0;
+});
+
+function caml_equal($a, $b) {
+    if ($a === $b) return 1;
+    if ($a instanceof CamlBlock && $b instanceof CamlBlock) {
+        if (count($a->fields) !== count($b->fields)) return 0;
+        foreach ($a->fields as $i => $v) {
+            if (!caml_equal($v, $b->fields[$i])) return 0;
+        }
+        return 1;
+    }
+    return $a == $b ? 1 : 0;
+}
+_jsoo_set_global('caml_equal', 'caml_equal');
+
+function caml_compare($a, $b) {
+    if ($a === $b) return 0;
+    if ($a instanceof CamlBlock && $b instanceof CamlBlock) {
+        $tag_a = $a->fields[0];
+        $tag_b = $b->fields[0];
+        if ($tag_a !== $tag_b) return $tag_a <=> $tag_b;
+        $ca = count($a->fields);
+        $cb = count($b->fields);
+        if ($ca !== $cb) return $ca <=> $cb;
+        for ($i = 1; $i < $ca; $i++) {
+            $res = caml_compare($a->fields[$i], $b->fields[$i]);
+            if ($res !== 0) return $res;
+        }
+        return 0;
+    }
+    if ($a instanceof CamlBlock || $b instanceof CamlBlock) {
+        return ($a instanceof CamlBlock) ? 1 : -1;
+    }
+    return $a <=> $b;
+}
+_jsoo_set_global('caml_compare', 'caml_compare');
+
+_jsoo_set_global('caml_array_concat', function($l) {
+    $res = [0];
+    // $l is an OCaml list of arrays
+    while ($l instanceof CamlBlock && $l->fields[0] === 0) {
+        $arr = $l->fields[1];
+        if ($arr instanceof CamlBlock) {
+            for ($i = 1; $i < count($arr->fields); $i++) {
+                $res[] = $arr->fields[$i];
+            }
+        }
+        $l = $l->fields[2];
+    }
+    return new CamlBlock($res);
+});
+
 // Array primitives
 _jsoo_set_global('caml_array_make', function($len, $v) {
     return new CamlBlock(array_merge([0], array_fill(0, $len, $v)));
@@ -316,6 +372,11 @@ function caml_shift_right_unsigned($a, $b) {
     return ($a & 0xFFFFFFFF) >> $b;
 }
 _jsoo_set_global('caml_shift_right_unsigned', 'caml_shift_right_unsigned');
+
+function caml_int32($x) {
+    return unpack("l", pack("l", (int)$x))[1];
+}
+_jsoo_set_global('caml_int32', 'caml_int32');
 
 _jsoo_set_global('caml_call_gen', function($f, $args) {
     if ($args instanceof CamlBlock) $args = $args->fields;

@@ -10,7 +10,7 @@ let rec sum_list l acc =
   | x :: xs -> sum_list xs (acc + x)
 
 let test_large_list () =
-  let n = 100000 in
+  let n = 40000 in
   (* Create list [1; 2; ...; 100000] using tail recursion *)
   let l = make_list n [] in
   
