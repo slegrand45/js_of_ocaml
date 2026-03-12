@@ -43,8 +43,8 @@ for f in *.ml; do
     # 2. Sortie PHP (Génération via ocamlephan)
     # Le compilateur injecte maintenant <?php en tête de fichier
     extra_args=""
-    if [ "$test_name" == "effects" ]; then
-        extra_args="--effects=cps"
+    if [[ "$test_name" == *"effect"* ]]; then
+        extra_args="--effects=fibers"
     fi
     "$JSOO" --php --pretty --noruntime $extra_args "tmp_out/${test_name}.byte" -o "tmp_out/${test_name}.php" 2>/dev/null
 
