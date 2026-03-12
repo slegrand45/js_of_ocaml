@@ -467,7 +467,7 @@ let rec args_equal xs ys =
 let f_once_after p =
   let first_class_primitives =
     match Config.target (), Config.effects () with
-    | `JavaScript, `Disabled -> true
+    | `JavaScript, (`Disabled | `Fibers) -> true
     | `JavaScript, (`Cps | `Double_translation) | `Wasm, _ -> false
     | `JavaScript, `Jspi -> assert false
   in

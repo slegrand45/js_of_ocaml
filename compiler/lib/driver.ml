@@ -176,15 +176,18 @@ let effects_and_exact_calls
         | `JavaScript -> Lambda_lifting.f p
       in
       p, trampolined_calls, in_cps, None, shapes
-  | `Disabled | `Jspi ->
+  | `Disabled | `Jspi | `Fibers ->
       let p =
-        Specialize.f
-          ~shape:(fun f ->
-            match Global_flow.function_arity info f with
-            | None -> Shape.Top
-            | Some arity -> Shape.Function { arity; pure = false; res = Top })
-          ~update_def:(fun x expr -> Global_flow.update_def info x expr)
-          p
+        if Poly.equal (Config.effects ()) `Fibers
+        then p
+        else
+          Specialize.f
+            ~shape:(fun f ->
+              match Global_flow.function_arity info f with
+              | None -> Shape.Top
+              | Some arity -> Shape.Function { arity; pure = false; res = Top })
+            ~update_def:(fun x expr -> Global_flow.update_def info x expr)
+            p
       in
       let shapes = collects_shapes ~shapes p in
       ( p
@@ -782,8 +785,9 @@ let optimize ~shapes ~profile ~keep_flow_data p =
     +> effects_and_exact_calls ~keep_flow_data ~deadcode_sentinel ~shapes profile
     +> map_fst5
          (match Config.target (), Config.effects () with
-         | `JavaScript, `Disabled -> Generate_closure.f
-         | `JavaScript, (`Cps | `Double_translation) | `Wasm, (`Disabled | `Jspi | `Cps)
+         | `JavaScript, (`Disabled | `Fibers) -> Generate_closure.f
+         | `JavaScript, (`Cps | `Double_translation)
+         | `Wasm, (`Disabled | `Jspi | `Cps | `Fibers)
            -> Fun.id
          | `JavaScript, `Jspi | `Wasm, `Double_translation -> assert false)
     +> map_fst5 deadcode'

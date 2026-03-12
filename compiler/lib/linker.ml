@@ -206,12 +206,12 @@ module Fragment = struct
         , fun () ->
             match Config.effects () with
             | `Disabled | `Jspi -> false
-            | `Cps | `Double_translation -> true )
+            | `Cps | `Double_translation | `Fibers -> true )
       ; ( "doubletranslate"
         , fun () ->
             match Config.effects () with
             | `Double_translation -> true
-            | `Jspi | `Cps | `Disabled -> false )
+            | `Jspi | `Cps | `Disabled | `Fibers -> false )
       ; ( "wasm"
         , fun () ->
             match Config.target () with

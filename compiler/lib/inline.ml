@@ -447,7 +447,7 @@ and should_inline ~context info args =
      context.enclosing_function]) since this results in significant
      performance improvements. *)
   (match Config.target (), Config.effects () with
-    | `JavaScript, (`Disabled | `Cps) ->
+    | `JavaScript, (`Disabled | `Cps | `Fibers) ->
         closure_count ~context info = 0
         || Option.is_none context.enclosing_function
         || Option.equal Var.equal info.enclosing_function context.current_function

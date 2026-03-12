@@ -27,7 +27,7 @@ let times = Debug.find "times"
 let cps_transform () =
   match Config.effects () with
   | `Cps | `Double_translation -> true
-  | `Disabled -> false
+  | `Disabled | `Fibers -> false
   | `Jspi -> assert false
 
 open Code
@@ -1088,7 +1088,7 @@ let apply_fun_raw =
         | `Double_translation when cps ->
             (* Effects enabled, CPS version, not single-version *)
             J.EDot (f, J.ANormal, cps_field)
-        | `Cps | `Double_translation | `Disabled -> f
+        | `Cps | `Double_translation | `Disabled | `Fibers -> f
         | `Jspi -> assert false
       in
       (* We skip the arity check when we know that we have the right
@@ -1102,7 +1102,7 @@ let apply_fun_raw =
                ctx
                (match Config.effects () with
                | `Double_translation when cps -> "caml_call_gen_cps"
-               | `Double_translation | `Cps | `Disabled -> "caml_call_gen"
+               | `Double_translation | `Cps | `Disabled | `Fibers -> "caml_call_gen"
                | `Jspi -> assert false))
             [ f; J.array params ]
             J.N
@@ -1126,7 +1126,7 @@ let apply_fun_raw =
                    ctx
                    (match Config.effects () with
                    | `Double_translation when cps -> "caml_call_gen_cps"
-                   | `Double_translation | `Cps | `Disabled -> "caml_call_gen"
+                   | `Double_translation | `Cps | `Disabled | `Fibers -> "caml_call_gen"
                    | `Jspi -> assert false))
                 [ f; J.array params ]
                 J.N )
@@ -1142,7 +1142,7 @@ let apply_fun_raw =
                 (List.nth params (n - 1))
                 [ apply ~cps:false f (fst (List.take (n - 1) params)) ]
                 J.N )
-      | `Double_translation | `Cps | `Disabled -> apply ~cps f params
+      | `Double_translation | `Cps | `Disabled | `Fibers -> apply ~cps f params
       | `Jspi -> assert false
     in
     if trampolined
@@ -1669,19 +1669,38 @@ let rec translate_expr ctx loc x e level : (_ * J.statement_list) Expr_builder.t
             in
             return e
         | Extern "caml_alloc_dummy_function", _ -> assert false
-        | Extern ("%resume" | "%perform" | "%reperform"), _ ->
+        | Extern ("%resume" | "%perform" | "%reperform" as e), args ->
             assert (not (cps_transform ()));
-            if not !(ctx.effect_warning)
-            then (
-              Warning.warn
-                `Effect_handlers_without_effect_backend
-                "your program contains effect handlers; you should probably run \
-                 js_of_ocaml with option '--effects=cps'@.";
-              ctx.effect_warning := true);
-            let name = "jsoo_effect_not_supported" in
-            let prim = Share.get_prim (runtime_fun ctx) name ctx.Ctx.share in
-            let* () = info ~need_loc:true (kind (Primitive.kind name)) in
-            return (J.call prim [] loc)
+            if Poly.equal (Config.effects ()) `Fibers && Config.Flag.php_output ()
+            then
+              let name =
+                match e with
+                | "%perform" -> "caml_perform_effect"
+                | "%reperform" -> "caml_reperform_effect"
+                | "%resume" -> "caml_resume_stack"
+                | _ -> assert false
+              in
+              let args =
+                match e, args with
+                | "%resume", [ stack; f; arg; _tail ] -> [ stack; f; arg ]
+                | _, _ -> args
+              in
+              let prim = Share.get_prim (runtime_fun ctx) name ctx.Ctx.share in
+              let* () = info ~need_loc:true (kind (Primitive.kind name)) in
+              let* cargs = Expr_builder.list_map (access' ~ctx) args in
+              return (J.call prim cargs loc)
+            else (
+              if not !(ctx.effect_warning)
+              then (
+                Warning.warn
+                  `Effect_handlers_without_effect_backend
+                  "your program contains effect handlers; you should probably run \
+                   js_of_ocaml with option '--effects=cps'@.";
+                ctx.effect_warning := true);
+              let name = "jsoo_effect_not_supported" in
+              let prim = Share.get_prim (runtime_fun ctx) name ctx.Ctx.share in
+              let* () = info ~need_loc:true (kind (Primitive.kind name)) in
+              return (J.call prim [] loc))
         | Extern "caml_string_notequal", [ a; b ] when Config.Flag.use_js_string () ->
             let* cx = access' ~ctx a in
             let* cy = access' ~ctx b in

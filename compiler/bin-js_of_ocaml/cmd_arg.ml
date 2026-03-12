@@ -39,7 +39,7 @@ let trim_trailing_dir_sep s =
 
 let normalize_include_dirs dirs = List.map dirs ~f:trim_trailing_dir_sep
 
-let normalize_effects (effects : [ `Disabled | `Cps | `Double_translation ] option) common
+let normalize_effects (effects : [ `Disabled | `Cps | `Double_translation | `Fibers ] option) common
     : Config.effects_backend =
   match effects with
   | None ->
@@ -48,7 +48,7 @@ let normalize_effects (effects : [ `Disabled | `Cps | `Double_translation ] opti
       if List.mem ~eq:String.equal "effects" common.Jsoo_cmdline.Arg.optim.enable
       then `Cps
       else `Disabled
-  | Some ((`Disabled | `Cps | `Double_translation) as e) -> e
+  | Some ((`Disabled | `Cps | `Double_translation | `Fibers) as e) -> e
 
 type t =
   { common : Jsoo_cmdline.Arg.t
@@ -296,8 +296,8 @@ let options =
   let effects =
     let doc =
       "Select an implementation of effect handlers. [$(docv)] should be one of $(b,cps), \
-       $(b,double-translation) or $(b,disabled) (the default). Effects won't be \
-       supported if unspecified."
+       $(b,double-translation), $(b,fibers) or $(b,disabled) (the default). Effects \
+       won't be supported if unspecified."
     in
     Arg.(
       value
@@ -306,6 +306,7 @@ let options =
              (enum
                 [ "cps", `Cps
                 ; "double-translation", `Double_translation
+                ; "fibers", `Fibers
                 ; "disabled", `Disabled
                 ]))
           None
@@ -576,8 +577,8 @@ let options_runtime_only =
   let effects =
     let doc =
       "Select an implementation of effect handlers. [$(docv)] should be one of $(b,cps), \
-       $(b,double-translation), or $(b,disabled) (the default). Effects won't be \
-       supported if unspecified."
+       $(b,double-translation), $(b,fibers) or $(b,disabled) (the default). Effects \
+       won't be supported if unspecified."
     in
     Arg.(
       value
@@ -586,6 +587,7 @@ let options_runtime_only =
              (enum
                 [ "cps", `Cps
                 ; "double-translation", `Double_translation
+                ; "fibers", `Fibers
                 ; "disabled", `Disabled
                 ]))
           None
