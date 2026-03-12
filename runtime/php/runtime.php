@@ -137,6 +137,12 @@ _jsoo_set_global('caml_ml_open_descriptor_out', function($fd) { return $fd; });
 
 _jsoo_set_global('caml_ml_output', function($fd, $s, $start, $len) {
     if ($s instanceof CamlBlock) $s = $s->fields[1];
+    if (is_object($s) && !($s instanceof CamlBlock)) {
+        fwrite(STDERR, "DEBUG: caml_ml_output called with object of type " . get_class($s) . "\n");
+        if ($s instanceof Closure) {
+            fwrite(STDERR, "DEBUG: Closure is a closure!\n");
+        }
+    }
     echo substr($s, $start, $len);
 });
 
@@ -375,7 +381,7 @@ function caml_resume_stack($stack, $last, $k) {
     $GLOBALS['caml_current_stack']->k = $k;
     $last->e = $GLOBALS['caml_current_stack'];
     $GLOBALS['caml_current_stack'] = $stack;
-    return $stack->k;
+    return caml_trampoline_return($stack->k, [$k], 0);
 }
 _jsoo_set_global('caml_resume_stack', 'caml_resume_stack');
 
