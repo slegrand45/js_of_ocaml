@@ -657,7 +657,7 @@ let pack ~wrap_with_fun ~standalone { Linker.runtime_code = js; always_required_
           let call_stmt =
             expr
               (J.ECall
-                 (J.EVar (J.ident name), J.ANormal, [J.Arg (J.EVar (J.ident (Utf8_string.of_string_exn "GLOBALS")))], J.N))
+                 (J.EVar (J.ident (Utf8_string.of_string_exn "_jsoo_call_main")), J.ANormal, [J.Arg (J.EVar (J.ident name)); J.Arg (J.EVar (J.ident (Utf8_string.of_string_exn "GLOBALS")))], J.N))
           in
           (* For PHP, return function and call as separate statements, not wrapped in a Block *)
           (match func_stmts with

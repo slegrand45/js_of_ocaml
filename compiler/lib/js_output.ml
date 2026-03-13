@@ -1165,7 +1165,7 @@ struct
             PP.end_group f)
     | EArr el ->
         PP.start_group f 1;
-        if Config.Flag.php_output () then PP.string f "new CamlBlock(";
+        if Config.Flag.php_output () then PP.string f "caml_block(";
         PP.string f "[";
         element_list f el;
         PP.string f "]";

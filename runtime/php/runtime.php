@@ -11,6 +11,21 @@ class CamlException extends Exception {
     }
 }
 
+$GLOBALS['caml_exceptions_registry'] = [];
+function caml_block($fields) {
+    if (isset($fields[0]) && $fields[0] === 248 && isset($fields[1]) && is_string($fields[1])) {
+        $name = $fields[1];
+        if (isset($GLOBALS['caml_exceptions_registry'][$name])) {
+             return $GLOBALS['caml_exceptions_registry'][$name];
+        }
+        $b = new CamlBlock($fields);
+        $GLOBALS['caml_exceptions_registry'][$name] = $b;
+        return $b;
+    }
+    return new CamlBlock($fields);
+}
+_jsoo_set_global('caml_block', function($f) { return caml_block($f); });
+
 class CamlBlock implements ArrayAccess, Countable, IteratorAggregate {
     public array $fields;
     public function __construct(array $fields) {
@@ -31,37 +46,35 @@ class CamlBlock implements ArrayAccess, Countable, IteratorAggregate {
     public function getIterator(): Traversable { return new ArrayIterator($this->fields); }
 }
 
-$GLOBALS['caml_arities'] = [];
+$GLOBALS['caml_arities'] = new WeakMap();
 function caml_set_arity($f, $arity) {
     if (is_object($f) && !($f instanceof CamlBlock)) {
-        $GLOBALS['caml_arities'][spl_object_hash($f)] = $arity;
+        $GLOBALS['caml_arities'][$f] = $arity;
     }
 }
 
 function caml_get_arity($f) {
     if (!is_object($f)) {
         if (is_string($f) && is_callable($f)) {
-            if (isset($GLOBALS['caml_arities'][$f])) return $GLOBALS['caml_arities'][$f];
-            try {
-                $ref = new ReflectionFunction($f);
-                $arity = $ref->getNumberOfParameters();
-                if ($arity === 0) $arity = 1;
-                $GLOBALS['caml_arities'][$f] = $arity;
-                return $arity;
-            } catch (Exception $e) { return 1; }
+            return 1;
         }
         return -1;
     }
-    if ($f instanceof CamlBlock) return -1;
-    $hash = spl_object_hash($f);
-    if (isset($GLOBALS['caml_arities'][$hash])) return $GLOBALS['caml_arities'][$hash];
+    if ($f instanceof CamlBlock) {
+        if (isset($f->fields[1]) && (is_callable($f->fields[1]) || $f->fields[1] instanceof CamlBlock)) {
+            return caml_get_arity($f->fields[1]);
+        }
+        return -1;
+    }
+    if (isset($GLOBALS['caml_arities'][$f])) return $GLOBALS['caml_arities'][$f];
     if ($f instanceof Closure || is_callable($f)) {
         try {
             $ref = new ReflectionFunction($f);
             $arity = $ref->getNumberOfRequiredParameters();
-            if ($arity === 0 && $ref->getNumberOfParameters() > 0) $arity = 1;
+            $p_total = $ref->getNumberOfParameters();
+            if ($arity === 0 && $p_total > 0) $arity = 1;
             if ($arity === 0) $arity = 1;
-            $GLOBALS['caml_arities'][$hash] = $arity;
+            $GLOBALS['caml_arities'][$f] = $arity;
             return $arity;
         } catch (Exception $e) { return 1; }
     }
@@ -76,15 +89,26 @@ function caml_call_gen($f, $args) {
     $n = count($args);
     if ($n === 0) return $f;
     
+    if ($f instanceof CamlBlock) {
+        if (isset($f->fields[1]) && (is_callable($f->fields[1]) || $f->fields[1] instanceof CamlBlock)) {
+            return caml_call_gen($f->fields[1], $args);
+        }
+    }
+
     $arity = caml_get_arity($f);
     if ($arity > $n) {
-
         return function(...$extra) use ($f, $args) {
             return caml_call_gen($f, array_merge($args, $extra));
         };
     }
     
-    if ($arity <= 0 || $arity === $n) return $f(...$args);
+    if ($arity <= 0 || $arity === $n) {
+        try {
+            return $f(...$args);
+        } catch (Throwable $e) {
+            throw $e;
+        }
+    }
     if ($arity < $n) {
         $res = $f(...array_slice($args, 0, $arity));
         return caml_call_gen($res, array_slice($args, $arity));
@@ -102,6 +126,26 @@ function _jsoo_set_global($name, $value) {
 
 // Primitives de base
 _jsoo_set_global('caml_call_gen', 'caml_call_gen');
+
+_jsoo_set_global('_jsoo_call_main', function($main, $global) {
+    try {
+        return $main($global);
+    } catch (CamlException $e) {
+        $v = $e->caml_val;
+        if ($v instanceof CamlBlock && $v->fields[0] === 0 && isset($v->fields[1])) {
+            $exn = $v->fields[1];
+            // If it's Undefined_recursive_module and we are at top-level
+            if ($exn instanceof CamlBlock && $exn->fields[0] === 248 && $exn->fields[1] === "Undefined_recursive_module") {
+                $file = $v->fields[2]->fields[1];
+                $line = $v->fields[2]->fields[2];
+                $col = $v->fields[2]->fields[3];
+                fwrite(STDERR, "Fatal error: exception Undefined_recursive_module(\"$file\", $line, $col)\n");
+                exit(2);
+            }
+        }
+        throw $e;
+    }
+});
 function caml_int32($x) { return unpack("l", pack("l", (int)$x))[1]; }
 _jsoo_set_global('caml_int32', 'caml_int32');
 
@@ -200,7 +244,9 @@ class CamlFiber {
 }
 
 function caml_wrap_exception($e) {
-    if ($e instanceof CamlException) return $e->caml_val;
+    if ($e instanceof CamlException) {
+         return $e->caml_val;
+    }
     if ($e instanceof Throwable) return new CamlBlock([0, 0, $e->getMessage()]);
     return $e;
 }
@@ -300,7 +346,15 @@ _jsoo_set_global('caml_array_concat', function($arrs) {
 });
 _jsoo_set_global('caml_int_compare', function($a, $b) { return $a <=> $b; });
 _jsoo_set_global('caml_string_compare', 'strcmp');
-_jsoo_set_global('caml_failwith', function($s) { throw new Exception($s); });
+_jsoo_set_global('caml_equal_exn', function($a, $b) {
+    if ($a === $b) return 1;
+    if ($a instanceof CamlBlock && $b instanceof CamlBlock) {
+         if ($a->fields[0] === 248 && $b->fields[0] === 248) {
+              return $a->fields[1] === $b->fields[1] ? 1 : 0;
+         }
+    }
+    return 0;
+});
 
 // Structural comparison
 _jsoo_set_global('caml_equal', function($a, $b) {
