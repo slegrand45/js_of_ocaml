@@ -7,8 +7,8 @@ YELLOW='\033[1;33m'
 NC='\033[0m' # Pas de couleur
 
 # Chemins relatifs
-JSOO="../../_build/default/compiler/bin-js_of_ocaml/js_of_ocaml.exe"
-RUNTIME_PHP="../../runtime/php/runtime.php"
+JSOO="${JSOO:-../../_build/default/compiler/bin-js_of_ocaml/js_of_ocaml.exe}"
+RUNTIME_PHP="${RUNTIME_PHP:-../../runtime/php/runtime.php}"
 
 # Préparation de l'environnement
 cd "$(dirname "$0")"
